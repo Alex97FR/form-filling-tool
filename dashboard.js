@@ -592,7 +592,7 @@ $('#reportResults').onclick = async event => {
 async function rebuildReportsFromTarget() {
   const button = $('#rebuildReports');
   if (!button || button.disabled) return;
-  const config = await extensionStorage.sync.get({ targetUrl: '', targetTab: '', groupTab: '' });
+  const config = await extensionStorage.sync.get({ targetUrl: '', targetTab: '', groupTab: '', transferGroup: 'group1' });
   if (!config.targetUrl || !config.targetTab || !config.groupTab) {
     log('请先在参数配置中填写目标表格、目标分表和群组配置分表。', 'error');
     return;
