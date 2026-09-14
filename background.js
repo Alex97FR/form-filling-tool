@@ -33,7 +33,7 @@ const rowsHash = rows => {
 };
 
 async function syncRegionConfigAtNoon() {
-  const { targetUrl } = await chrome.storage.sync.get({ targetUrl: '' });
+  const { targetUrl } = await chrome.storage.local.get({ targetUrl: '' });
   const { regionTab = '' } = await chrome.storage.local.get({ regionTab: '' });
   const id = spreadsheetId(targetUrl);
   if (!id || !regionTab) return;
