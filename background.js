@@ -52,14 +52,16 @@ async function syncRegionConfigAtNoon() {
   if (!response.ok) return;
   const rows = (await response.json()).values || [];
   const { regionConfigCache } = await chrome.storage.local.get({ regionConfigCache: null });
+  const cacheScope = `${id}|${regionTab}`;
+  const scopedCache = regionConfigCache?.scope === cacheScope ? regionConfigCache : null;
   // Compare content, not row count, so edited/deleted config rows propagate.
   // An empty read never wipes a working cache.
-  if (regionConfigCache?.rows?.length && !rows.length) {
+  if (scopedCache?.rows?.length && !rows.length) {
     await chrome.storage.local.set({ regionConfigLastCheckedAt: Date.now(), regionConfigLastCheckRows: 0 });
     return;
   }
-  if (!regionConfigCache || rowsHash(rows) !== regionConfigCache.contentHash) {
-    await chrome.storage.local.set({ regionConfigCache: { rows, rowCount: rows.length, syncedAt: Date.now(), contentHash: rowsHash(rows) } });
+  if (!scopedCache || rowsHash(rows) !== scopedCache.contentHash) {
+    await chrome.storage.local.set({ regionConfigCache: { scope: cacheScope, rows, rowCount: rows.length, syncedAt: Date.now(), contentHash: rowsHash(rows) } });
   }
   await chrome.storage.local.set({ regionConfigLastCheckedAt: Date.now(), regionConfigLastCheckRows: rows.length });
 }

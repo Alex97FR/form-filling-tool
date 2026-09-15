@@ -837,6 +837,24 @@ const findConfiguredProvince = (hint, rows) => {
       : null);
   return row?.[1] || '';
 };
+const countryAliasGroups = [
+  ['togo', '多哥'],
+  ['cote d ivoire', 'cote divoire', 'ivory coast', '科特迪瓦'],
+  ['cameroon', 'cameroun', '喀麦隆'],
+  ['rdc', 'drc', 'democratic republic of congo', 'republique democratique du congo', 'congo kinshasa', '刚果民主共和国', '刚果金'],
+  ['congo brazzaville', 'republique du congo', 'republic of the congo', '刚果共和国', '刚果布']
+];
+const countryAliasKey = value => {
+  const wanted = normalize(value);
+  const compact = compactKey(value);
+  return countryAliasGroups.find(([key, ...aliases]) => [key, ...aliases].some(alias => {
+    const normalizedAlias = normalize(alias);
+    const aliasCompact = compactKey(alias);
+    return wanted === normalizedAlias
+      || (normalizedAlias.length >= 4 && wanted.includes(normalizedAlias))
+      || (compact && aliasCompact && compact.includes(aliasCompact));
+  }))?.[0] || '';
+};
 const matchCountry = (value, options) => {
   const wanted = normalize(value);
   // “R.D Congo”这类点号写法归一化成 “r d congo”，词级别名匹配不到；用去掉
@@ -859,6 +877,11 @@ const matchCountry = (value, options) => {
       || congo.find(option => normalize(option).includes('republique du congo'))
       || congo.find(option => { const key = normalize(option); return !key.includes('kinshasa') && !key.includes('democratique') && !key.includes('rdc'); });
     if (brazza) return brazza;
+  }
+  const alias = countryAliasKey(value);
+  if (alias) {
+    const aliasHit = options.find(option => countryAliasKey(option) === alias);
+    if (aliasHit) return aliasHit;
   }
   return matchRegion(value, options);
 };
@@ -915,29 +938,32 @@ async function syncRegionConfig(token, base, regionTab) {
   if (!regionTab) throw new Error('尚未填写地区配置分表名称。');
   const cacheKey = 'regionConfigCache';
   const { [cacheKey]: cache } = await extensionStorage.local.get(cacheKey);
-  if (cache?.rows?.length && Date.now() - cache.syncedAt < 24 * 60 * 60 * 1000) {
-    showRegionCacheStatus(`已读取缓存：${cache.rowCount} 行，${cacheTime(cache.syncedAt)}；24 小时内无需检查`);
-    return cache.rows;
+  const spreadsheetId = base.match(/\/spreadsheets\/([a-zA-Z0-9_-]+)/)?.[1] || base;
+  const cacheScope = `${spreadsheetId}|${regionTab}`;
+  const scopedCache = cache?.scope === cacheScope ? cache : null;
+  if (scopedCache?.rows?.length && Date.now() - scopedCache.syncedAt < 24 * 60 * 60 * 1000) {
+    showRegionCacheStatus(`已读取缓存：${scopedCache.rowCount} 行，${cacheTime(scopedCache.syncedAt)}；24 小时内无需检查`);
+    return scopedCache.rows;
   }
   const result = await readValues(token, base, `${quoteSheet(regionTab)}!A:C`);
   const rows = result.values || [];
-  if (cache?.rows?.length && !rows.length) {
+  if (scopedCache?.rows?.length && !rows.length) {
     // A transient empty read must never wipe a working config.
-    await extensionStorage.local.set({ [cacheKey]: { ...cache, syncedAt: Date.now() } });
+    await extensionStorage.local.set({ [cacheKey]: { ...scopedCache, syncedAt: Date.now() } });
     showRegionCacheStatus('地区配置读取为空，保留原缓存；请检查配置分表是否被清空。', '#c5221f');
-    return cache.rows;
+    return scopedCache.rows;
   }
   const incomingHash = regionRowsHash(rows);
-  if (cache?.rows?.length && incomingHash === cache.contentHash) {
+  if (scopedCache?.rows?.length && incomingHash === scopedCache.contentHash) {
     // Content is unchanged; only the check timestamp moves. Row count alone
     // used to decide this, so edits/deletions were ignored forever.
-    await extensionStorage.local.set({ [cacheKey]: { ...cache, syncedAt: Date.now() } });
-    showRegionCacheStatus(`已检查，配置无变化：${cache.rowCount} 行，${cacheTime(Date.now())}`);
-    return cache.rows;
+    await extensionStorage.local.set({ [cacheKey]: { ...scopedCache, syncedAt: Date.now() } });
+    showRegionCacheStatus(`已检查，配置无变化：${scopedCache.rowCount} 行，${cacheTime(Date.now())}`);
+    return scopedCache.rows;
   }
-  const next = { rows, rowCount: rows.length, syncedAt: Date.now(), contentHash: incomingHash };
+  const next = { scope: cacheScope, rows, rowCount: rows.length, syncedAt: Date.now(), contentHash: incomingHash };
   await extensionStorage.local.set({ [cacheKey]: next });
-  showRegionCacheStatus(cache?.rows?.length ? `检测到地区配置有变化，已更新：${rows.length} 行，${cacheTime(next.syncedAt)}` : `已更新地区配置：${rows.length} 行，${cacheTime(next.syncedAt)}`);
+  showRegionCacheStatus(scopedCache?.rows?.length ? `检测到地区配置有变化，已更新：${rows.length} 行，${cacheTime(next.syncedAt)}` : `已更新地区配置：${rows.length} 行，${cacheTime(next.syncedAt)}`);
   return rows;
 }
 
