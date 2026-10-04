@@ -58,7 +58,7 @@
 | S01 | 密钥 | High | `dashboard.js:2058`、`dashboard.html:63`，配置导出 | 已修复：默认排除 API Key |
 | C02 | 代码 | Medium | `dashboard.js:306`、`:1175`、`:1193`、`:1228`、`:1766`，API/报告日志 | 已修复 |
 | C03 | 代码 | Medium | `content.js:177`、`:194`、`:211`、`:255`，网页菜单事件 | 已修复 |
-| C04 | 代码 | Medium | `.github/workflows/release.yml:13`、`:43`，CI 权限和发布隔离 | 已修复 |
+| C04 | 代码 | Medium | `.github/workflows/release.yml:13`、`:45`，CI 权限和发布隔离 | 已修复 |
 | C05 | 代码 | Low | `dashboard.js:2063`，配置文件导入 | 已修复 |
 | C06 | 代码 | Low | `dashboard.js:473`，旧历史记录链接 | 已修复：约束为 WhatsApp 号码链接 |
 | C07 | 代码 | Low | `dashboard.js:2109`，清除配置 | 已修复：补充删除待转交和重试记录 |
@@ -134,6 +134,8 @@
 原可选方案是升级/维护 Node Action，或者使用 GitHub 原生不可变发布。开发者已同意后一方案；GitHub API 已回读确认仓库的 immutable releases 设置为 true。新流程使用 GitHub 自动生成的发布证明关联标签、提交和资产，并执行 `gh release verify` 与 `gh release verify-asset`。这是 GitHub 发布证明，原独立 SLSA build-provenance Action 已移除。未来已发布的资产和标签锁定，更正需要新版本；已存在的旧发布不会自动获得这些保护。[GitHub 机制说明](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)、[ZIP 校验命令](https://cli.github.com/manual/gh_release_verify-asset)。
 
 修复后的 JavaScript 语法检查、地址匹配/写入一致性/缓存刷新回归、安全回归、工作流 Bash 语法检查和 git diff 空白检查均已通过。安全回归执行真实函数及事件处理代码，覆盖授权 state/回调/到期、备份字段、错误脱敏、来源/参数拒绝、合成点击拒绝、目标表 URL 边界；不使用真实凭据。
+
+包含全部代码修复的提交 `545282d` 已推送；[真实 GitHub CI 检查](https://github.com/Alex97FR/form-filling-tool/actions/runs/37244341413)成功，普通分支提交按设计跳过发布 job。本地 ZIP 经解压后再次通过语法及两项回归检查，包含 15 个版本控制文件，不包含本地样例、旧 ZIP 或凭据文件。
 
 审核范围内已确认的问题均已修复，未留下已确认的 Critical/High 代码漏洞或项目管理的 Node Action 依赖链。真实 Chrome/Edge 授权、Google Sheets/Groq/Gemini 在线读写及新版本发布证明的端到端验证**待确认**，需在登录环境或下一次正式版本标签发布时执行。runner 自带 Git/Node/gh 由 GitHub 镜像维护，实际版本会打印到 CI 日志；本次不将其视作仓库自带 npm 依赖。
 
