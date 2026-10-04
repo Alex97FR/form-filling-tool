@@ -87,7 +87,8 @@ vm.runInNewContext(source.match(/^const quoteSheet = .*$/m)[0]
   + '\n' + source.slice(source.indexOf('async function analyzeReports'), source.indexOf('async function transferWithSheetsApi'))
   + '\nglobalThis.flows = { analyzeReports, syncRegionConfig };', context);
 context.DEFAULT_GEMINI_MODEL = 'local-check';
-context.log = () => {};
+const logs = [];
+context.log = message => logs.push(message);
 context.showRegionCacheStatus = () => {};
 context.cacheTime = String;
 const dropdown = { W: [...new Set(rows.map(row => row[0]))], X: [...new Set(rows.map(row => row[1]))], Y: [...new Set(rows.map(row => row[2]))] };
@@ -117,6 +118,8 @@ async function checkFlows() {
   assert.equal(invalidChoice.writes.Y3, undefined);
   const scopedChoice = await checkWrites({ country: 'Gabon', explicit_province: 'Libreville', explicit_city: 'Unknown place' }, [], dropdown, { row: 0 });
   assert.equal(scopedChoice.writes.Y3, rows[1][2]);
+  await checkWrites({ ...fields, name: 'PRIVATE_PERSON_TEST', age: 'PRIVATE_AGE_TEST', profession: 'PRIVATE_JOB_TEST' });
+  assert.ok(!logs.some(message => /PRIVATE_(PERSON|AGE|JOB)_TEST|Nzeng Ayong/.test(message)), 'Report fields must not be copied to logs');
 
   let stored = { regionConfigCache: { scope: 'test|Regions', rows: [rows[0]], rowCount: 1, syncedAt: Date.now() } };
   let reads = 0;

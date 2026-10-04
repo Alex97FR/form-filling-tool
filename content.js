@@ -88,12 +88,23 @@
     }
   };
 
+  const pendingTargetMatches = (currentUrl, targetUrl) => {
+    try {
+      const current = new URL(currentUrl);
+      const target = new URL(targetUrl);
+      const sheetId = url => url.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)(?:\/|$)/)?.[1];
+      return current.origin === 'https://docs.google.com' && target.origin === current.origin
+        && Boolean(sheetId(target)) && sheetId(current) === sheetId(target)
+        && (!target.search || current.search === target.search) && (!target.hash || current.hash === target.hash);
+    } catch { return false; }
+  };
   const finishPendingTransfer = async pending => {
-    if (!location.href.startsWith(pending.targetUrl)) return;
-    if (Date.now() - pending.createdAt > 10 * 60 * 1000) {
+    const age = Date.now() - pending.createdAt;
+    if (!Number.isFinite(age) || age < 0 || age > 10 * 60 * 1000 || typeof pending.text !== 'string') {
       await chrome.storage.local.remove('formTransferPending');
       return;
     }
+    if (!pendingTargetMatches(location.href, pending.targetUrl)) return;
     if (pending.targetTab) {
       // Retry the scan briefly: right after page load the sheet tab bar may
       // not be rendered yet. If the tab really is missing, STOP — pasting
@@ -122,11 +133,13 @@
     [copy, done].forEach(button => Object.assign(button.style, {
       margin: '10px 8px 0 0', padding: '6px 10px', cursor: 'pointer'
     }));
-    copy.onclick = async () => {
+    copy.onclick = async event => {
+      if (!event.isTrusted) return;
       await navigator.clipboard.writeText(pending.text);
       notify('数据已复制，请点击目标首个空行后按 Ctrl+V。');
     };
-    done.onclick = async () => {
+    done.onclick = async event => {
+      if (!event.isTrusted) return;
       await chrome.storage.local.remove('formTransferPending');
       panel.remove();
     };
@@ -161,7 +174,7 @@
       });
       item.addEventListener('mouseenter', () => item.style.background = '#f1f3f4');
       item.addEventListener('mouseleave', () => item.style.background = '');
-      item.addEventListener('click', event => { event.stopPropagation(); transfer(); });
+      item.addEventListener('click', event => { if (!event.isTrusted) return; event.stopPropagation(); transfer(); });
       menu.prepend(item);
     }
     // 第二项：深度查询此号码（紧挨在“转交表格”下面，样式一致）。
@@ -178,7 +191,7 @@
       });
       deepItem.addEventListener('mouseenter', () => deepItem.style.background = '#f1f3f4');
       deepItem.addEventListener('mouseleave', () => deepItem.style.background = '');
-      deepItem.addEventListener('click', event => { event.stopPropagation(); deepQuery(); });
+      deepItem.addEventListener('click', event => { if (!event.isTrusted) return; event.stopPropagation(); deepQuery(); });
       const transferItem = menu.querySelector(`[${marker}]`);
       if (transferItem) transferItem.after(deepItem); else menu.prepend(deepItem);
     }
@@ -195,7 +208,7 @@
       });
       realtimeItem.addEventListener('mouseenter', () => realtimeItem.style.background = '#f1f3f4');
       realtimeItem.addEventListener('mouseleave', () => realtimeItem.style.background = '');
-      realtimeItem.addEventListener('click', event => { event.stopPropagation(); realtimeRecord(); });
+      realtimeItem.addEventListener('click', event => { if (!event.isTrusted) return; event.stopPropagation(); realtimeRecord(); });
       if (deepItem) deepItem.after(realtimeItem); else if (transferItem) transferItem.after(realtimeItem); else menu.prepend(realtimeItem);
     }
   };
@@ -239,6 +252,7 @@
     setTimeout(poll, 0);
   };
   const rememberContextMenuPoint = event => {
+    if (!event.isTrusted) return;
     lastContextMenuPoint = { x: event.clientX, y: event.clientY };
     clearTimeout(contextMenuPointTimer);
     contextMenuPointTimer = setTimeout(() => { lastContextMenuPoint = null; }, 1500);

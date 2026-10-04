@@ -53,13 +53,14 @@
           </select></label>
           <label id="llmKeyLabel">Groq API Keys（每行一个） <a class="api-key-help" href="https://aistudio.google.com/api-keys" target="_blank" rel="noopener noreferrer">申请 API Key</a><span class="secret-field"><textarea id="llmKey" rows="4" spellcheck="false" autocomplete="off" placeholder="gsk_...&#10;gsk_..."></textarea><button id="toggleLlmKey" class="secret-toggle" type="button" aria-label="显示 API Key" title="显示 API Key">👁</button></span></label>
           <p class="tip">Gemini 推荐先用 Flash Lite；Groq 可填写多个 Key，每行一个，遇到限流会自动轮询。Key 和模型选择只保存在本机扩展存储中。</p>
+          <p class="tip">运行报告拆解时，报告正文会发送给这里选择的 Groq 或 Gemini 服务处理；请避免发送不必要的敏感信息。交接报告历史保存在本机浏览器扩展存储中，最多保留最近 365 个有记录的日期。</p>
         </fieldset>
         <fieldset class="config-group realtime-config"><legend>实时记录</legend>
           <label>记录表网址<input id="realtimeRecordUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/.../edit"></label>
           <label>记录表分表名称<input id="realtimeRecordTab" placeholder="例如：Sheet1"></label>
         </fieldset>
         <p id="saveStatus" class="status"></p>
-        <div class="config-backup"><button id="save" class="secondary">保存配置</button><button id="exportConfig" class="secondary">导出配置</button><button id="importConfig" class="secondary">导入配置</button><button id="clearConfig" class="danger-button">清除所有配置</button><input id="configFile" type="file" accept="application/json,.json" hidden><p>导出文件包含 API Key，请妥善保存，不要上传到公开仓库。</p></div>
+        <div class="config-backup"><button id="save" class="secondary">保存配置</button><button id="exportConfig" class="secondary">导出配置</button><button id="importConfig" class="secondary">导入配置</button><button id="clearConfig" class="danger-button">清除所有配置</button><input id="configFile" type="file" accept="application/json,.json" hidden><label class="export-secret-option"><input id="exportIncludeKeys" type="checkbox">导出时包含 API Key（仅用于自己的设备迁移）</label><p>默认导出不包含 API Key。勾选后导出的文件包含明文密钥，请妥善保存，不要分享或上传到公开仓库。</p></div>
       </div></div>
     </section>
   </main>

@@ -221,29 +221,44 @@ function showTransferPreview(text, transferGroup = 'group1') {
   });
 }
 
+function parseGoogleAuthRedirect(redirected, redirectUri, expectedState) {
+  const result = new URL(redirected);
+  const expected = new URL(redirectUri);
+  if (result.origin !== expected.origin || result.pathname !== expected.pathname || result.search !== expected.search) {
+    throw new Error('Google 授权回调地址不正确。');
+  }
+  const fragment = new URLSearchParams(result.hash.slice(1));
+  if (fragment.getAll('state').length !== 1 || fragment.get('state') !== expectedState) {
+    throw new Error('Google 授权请求校验失败，请重新授权。');
+  }
+  if (fragment.has('error')) throw new Error('Google 网页授权未完成，请重新授权。');
+  const token = fragment.get('access_token');
+  const expiresIn = Number(fragment.get('expires_in'));
+  if (fragment.getAll('access_token').length !== 1 || !token || token.length > 8192 || /\s/.test(token)
+    || fragment.getAll('token_type').length !== 1 || fragment.get('token_type')?.toLowerCase() !== 'bearer'
+    || fragment.getAll('expires_in').length !== 1 || !Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > 86400) {
+    throw new Error('Google 授权页面没有返回有效的访问令牌。');
+  }
+  return { token, expiresIn };
+}
+
 async function getWebGoogleToken() {
   const redirectUri = extensionApi.identity.getRedirectURL();
+  const state = crypto.randomUUID();
   const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   authUrl.search = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID, response_type: 'token', redirect_uri: redirectUri,
     // 'consent' forces the full approval screen on every single run — the
     // reason the extension kept asking for permission. The account picker
     // alone is enough; Google remembers prior approval for the client.
-    scope: GOOGLE_SCOPE, prompt: 'select_account'
+    scope: GOOGLE_SCOPE, prompt: 'select_account', state
   });
   const redirected = await extensionApi.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true });
-  const resultUrl = new URL(redirected);
-  const fragment = new URLSearchParams(resultUrl.hash.slice(1));
-  const query = resultUrl.searchParams;
-  const error = fragment.get('error') || query.get('error');
-  if (error) throw new Error(`Google 网页授权失败：${error}`);
-  const token = fragment.get('access_token') || query.get('access_token');
-  if (!token) throw new Error('Google 授权页面没有返回 access token。');
+  const { token, expiresIn } = parseGoogleAuthRedirect(redirected, redirectUri, state);
   // Web-flow tokens expire in about an hour and cannot be refreshed (implicit
   // flow), so record the expiry and stop trusting a stale cached token.
-  const expiresIn = Number(fragment.get('expires_in') || query.get('expires_in') || 3600);
   webAccessToken = token;
-  webTokenExpiresAt = Date.now() + Math.max(300, expiresIn - 120) * 1000;
+  webTokenExpiresAt = Date.now() + Math.max(0, expiresIn - 120) * 1000;
   if (extensionStorage.session) await extensionStorage.session.set({ webAccessToken: token, webTokenExpiresAt });
   return token;
 }
@@ -295,7 +310,7 @@ async function sheetsRequest(token, url, init = {}) {
     const apiDisabled = response.status === 403 && detail.includes('has not been used');
     const error = new Error(apiDisabled
       ? 'Google Sheets API 尚未启用。请在 Google Cloud 项目 357885944577 中启用 Sheets API，等待几分钟后重试。'
-      : `Google Sheets API ${response.status}: ${detail.slice(0, 180)}`);
+      : `Google Sheets API 请求失败（HTTP ${response.status}）。`);
     error.status = response.status;
     throw error;
   }
@@ -456,7 +471,7 @@ const handoffIdentity = item => {
 };
 const uniqueHandoffResults = results => [...new Map(results.map(item => [handoffIdentity(item), item])).values()];
 function renderHandoffResults(results, isCurrent = true) {
-  const visibleResults = uniqueHandoffResults(results);
+  const visibleResults = uniqueHandoffResults(results).map(item => ({ ...item, phoneUrl: normalizePhoneUrl(item.phoneUrl) }));
   const reportGroupSources = new Set(visibleResults.map(item => normalizeTransferGroup(item.transferGroup)));
   const reportGroupColumn = reportGroupSources.size === 1 ? (reportGroupSources.has('group3') ? 'I' : 'H') : 'H/I';
   if (isCurrent) { currentHandoffResults = visibleResults; $('#reportDateFilter').value = ''; }
@@ -464,7 +479,7 @@ function renderHandoffResults(results, isCurrent = true) {
   $('#reportCount').textContent = visibleResults.length;
   $('#reportStatus').textContent = `${visibleResults.length} 行`;
   $('#reportResults').innerHTML = visibleResults.length
-    ? `<div class="report-row header"><div>行</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="submitter" title="点击修改名称">${escapeHtml(reportLabels.submitter)}</span>（J列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="brebis" title="点击修改名称">${escapeHtml(reportLabels.brebis)}</span>（P列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="numero" title="点击修改名称">${escapeHtml(reportLabels.numero)}</span>（Q列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="reportGroup" title="点击修改名称">${escapeHtml(reportLabels.reportGroup)}</span>（${reportGroupColumn}列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="callGroup" title="点击修改名称">${escapeHtml(reportLabels.callGroup)}</span>（J列）</div><div>匹配来源</div><div>操作</div></div>` + visibleResults.map((item, index) => { const source = item.source || ''; const rowClass = source.startsWith('Y→C') ? '' : (source ? 'coarse' : 'unmatched'); return `<div class="report-row ${rowClass}"><div class="report-cell">${escapeHtml(item.row)}</div><div class="report-cell">${escapeHtml(item.submitter || '—')}</div><div class="report-cell">${escapeHtml(item.brebis || '—')}</div><div class="report-cell">${item.phoneUrl ? `<a href="${escapeHtml(item.phoneUrl)}" target="_blank" rel="noopener">打开 WhatsApp</a>` : '—'}</div><div class="report-cell">${escapeHtml(item.reportGroup || '—')}</div><div class="report-cell">${escapeHtml(item.callGroup || '—')}</div><div class="report-cell match-source">${escapeHtml(source || '未匹配')}</div><div class="report-cell report-actions"><button class="copy-report icon-button secondary" data-report-index="${index}" aria-label="复制本条" title="复制本条">${copyIcon}</button><button class="refresh-match icon-button secondary" data-report-index="${index}" aria-label="重新匹配" title="重新匹配">${refreshIcon}</button></div></div>`; }).join('')
+    ? `<div class="report-row header"><div>行</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="submitter" title="点击修改名称">${escapeHtml(reportLabels.submitter)}</span>（J列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="brebis" title="点击修改名称">${escapeHtml(reportLabels.brebis)}</span>（P列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="numero" title="点击修改名称">${escapeHtml(reportLabels.numero)}</span>（Q列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="reportGroup" title="点击修改名称">${escapeHtml(reportLabels.reportGroup)}</span>（${reportGroupColumn}列）</div><div><span class="editable-report-label" contenteditable="true" spellcheck="false" data-report-label="callGroup" title="点击修改名称">${escapeHtml(reportLabels.callGroup)}</span>（J列）</div><div>匹配来源</div><div>操作</div></div>` + visibleResults.map((item, index) => { const source = item.source || ''; const rowClass = source.startsWith('Y→C') ? '' : (source ? 'coarse' : 'unmatched'); return `<div class="report-row ${rowClass}"><div class="report-cell">${escapeHtml(item.row)}</div><div class="report-cell">${escapeHtml(item.submitter || '—')}</div><div class="report-cell">${escapeHtml(item.brebis || '—')}</div><div class="report-cell">${item.phoneUrl ? `<a href="${escapeHtml(item.phoneUrl)}" target="_blank" rel="noopener noreferrer">打开 WhatsApp</a>` : '—'}</div><div class="report-cell">${escapeHtml(item.reportGroup || '—')}</div><div class="report-cell">${escapeHtml(item.callGroup || '—')}</div><div class="report-cell match-source">${escapeHtml(source || '未匹配')}</div><div class="report-cell report-actions"><button class="copy-report icon-button secondary" data-report-index="${index}" aria-label="复制本条" title="复制本条">${copyIcon}</button><button class="refresh-match icon-button secondary" data-report-index="${index}" aria-label="重新匹配" title="重新匹配">${refreshIcon}</button></div></div>`; }).join('')
     : '<div class="empty-report">该日期没有交接报告记录。</div>';
 }
 const cleanCopyValue = value => String(value ?? '').replace(/\s*\r?\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
@@ -1125,7 +1140,7 @@ async function fillPhoneCountries(token, base, sheetTitle, regionRows, startRow,
     // phone-country name, never the bilingual value from 地区配置.
     const value = dropdown.V.length ? matchRegion(rawCountry, dropdown.V) : rawCountry;
     if (value) updates.push({ range: `${sheet}!V${startRow + index}`, majorDimension: 'ROWS', values: [[value]] });
-    log(`第 ${startRow + index} 行 Q 区号：${rawCountry || '未识别'}，V 列：${value || '未匹配'}`);
+    log(`第 ${startRow + index} 行 Q 区号处理：${value ? '已匹配' : '未匹配'}。`);
   }
   if (updates.length) await sheetsRequest(token, `${base}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data: updates }) });
   return { count: updates.length, dropdown };
@@ -1161,7 +1176,7 @@ function parseModelJson(content, provider) {
   const text = String(content || '').trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1]?.trim() || text;
   const start = fenced.indexOf('{');
-  if (start < 0) throw new Error(`${provider} 返回内容中没有找到有效 JSON：${text.slice(0, 300) || '返回为空'}`);
+  if (start < 0) throw new Error(`${provider} 返回内容中没有找到有效 JSON。`);
   let depth = 0; let end = -1; let quoted = false; let escaped = false;
   for (let index = start; index < fenced.length; index++) {
     const character = fenced[index];
@@ -1170,9 +1185,9 @@ function parseModelJson(content, provider) {
     if (character === '{') depth++;
     if (character === '}' && --depth === 0) { end = index; break; }
   }
-  if (end < 0) throw new Error(`${provider} 返回的 JSON 不完整：${text.slice(0, 300)}`);
+  if (end < 0) throw new Error(`${provider} 返回的 JSON 不完整。`);
   try { return JSON.parse(fenced.slice(start, end + 1)); }
-  catch { throw new Error(`${provider} 返回的报告 JSON 格式无效：${fenced.slice(start, end + 1).slice(0, 300)}`); }
+  catch { throw new Error(`${provider} 返回的报告 JSON 格式无效。`); }
 }
 
 async function callGroq(apiKey, systemPrompt, userText, strictHint = false) {
@@ -1186,7 +1201,7 @@ async function callGroq(apiKey, systemPrompt, userText, strictHint = false) {
       ]
     })
   });
-  if (!response.ok) { const error = new Error(`Groq API ${response.status}: ${(await response.text()).slice(0, 180)}`); error.status = response.status; throw error; }
+  if (!response.ok) { const error = new Error(`Groq API 请求失败（HTTP ${response.status}）。`); error.status = response.status; throw error; }
   const data = await response.json();
   const message = data.choices?.[0]?.message || {};
   return parseModelJson(message.content || message.reasoning || data.choices?.[0]?.text || '', 'Groq');
@@ -1223,7 +1238,7 @@ async function callGemini(apiKey, model, systemPrompt, userText, strictHint = fa
         : { responseMimeType: 'application/json' }
     })
   });
-  if (!response.ok) throw new Error(`Gemini API ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  if (!response.ok) throw new Error(`Gemini API 请求失败（HTTP ${response.status}）。`);
   const data = await response.json();
   const content = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '';
   return parseModelJson(content, 'Gemini');
@@ -1318,11 +1333,11 @@ function deepCardHtml(item) {
     const text = cleanCopyValue(value);
     if (!text) return `<span class="deep-chip none">${label}：未配置</span>`;
     if (!/^https?:\/\//i.test(text)) return `<span class="deep-chip plain" title="${escapeHtml(text)}">${label}：已配置（无链接）</span>`;
-    return `<span class="deep-chip link"><a href="${escapeHtml(text)}" target="_blank" rel="noopener" title="${escapeHtml(text)}">${label} ↗</a><button type="button" class="chip-copy" data-deep-copy="${escapeHtml(text)}" aria-label="复制链接" title="复制链接">${copyIcon}</button></span>`;
+    return `<span class="deep-chip link"><a href="${escapeHtml(text)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(text)}">${label} ↗</a><button type="button" class="chip-copy" data-deep-copy="${escapeHtml(text)}" aria-label="复制链接" title="复制链接">${copyIcon}</button></span>`;
   };
   const waLink = normalizePhoneUrl(item.phone);
   return `<div class="deep-card">
-      <div class="deep-head"><span class="deep-name">${escapeHtml(item.brebis || '未命名人员')}</span><span class="deep-phone">${escapeHtml(phone)}</span>${waLink ? `<a class="deep-action whatsapp-action" href="${escapeHtml(waLink)}" target="_blank" rel="noopener">打开 WhatsApp ↗</a>` : ''}${phone ? `<button type="button" class="deep-action copy-phone" data-deep-copy="${escapeHtml(phone)}" aria-label="复制手机号" title="复制手机号">复制手机号 ${copyIcon}</button>` : ''}<span class="badge deep-status-badge ${statusClass}">${statusLabel}</span><span class="badge deep-badge">第 ${item.row} 行${item.dateKey ? ` · ${item.dateKey}` : ''}</span></div>
+      <div class="deep-head"><span class="deep-name">${escapeHtml(item.brebis || '未命名人员')}</span><span class="deep-phone">${escapeHtml(phone)}</span>${waLink ? `<a class="deep-action whatsapp-action" href="${escapeHtml(waLink)}" target="_blank" rel="noopener noreferrer">打开 WhatsApp ↗</a>` : ''}${phone ? `<button type="button" class="deep-action copy-phone" data-deep-copy="${escapeHtml(phone)}" aria-label="复制手机号" title="复制手机号">复制手机号 ${copyIcon}</button>` : ''}<span class="badge deep-status-badge ${statusClass}">${statusLabel}</span><span class="badge deep-badge">第 ${item.row} 行${item.dateKey ? ` · ${item.dateKey}` : ''}</span></div>
       <div class="deep-section"><span class="deep-label">国家地址</span><span class="deep-value">${addressText ? `${escapeHtml(addressText)} <span class="match-source">${escapeHtml(item.matchSource || '未匹配')}</span><small class="deep-basis">${escapeHtml(deepMatchBasis(item))} · 来源：目标表 W/X/Y · 第 ${item.row} 行</small>` : '<span class="deep-missing">该行 W/X/Y 为空，未能匹配群组</span><small class="deep-basis">地址来源：目标表 W/X/Y · 第 ' + escapeHtml(item.row) + ' 行</small>'}</span></div>
       <div class="deep-section"><span class="deep-label">${deepLabelHtml('followUp')}</span><span class="deep-value">${escapeHtml(item.followUp || '—')}</span></div>
       <div class="deep-section"><span class="deep-label">${deepLabelHtml('ownerGroup')}</span><span class="deep-value">${escapeHtml(item.ownerGroup || '—')}</span></div>
@@ -1491,7 +1506,7 @@ function renderRealtimeRecords(items) {
     const contact = String(item.contact || '').trim();
     const contactDigits = contact.replace(/\D/g, '').replace(/^00/, '');
     const contactLink = contactDigits ? `https://web.whatsapp.com/send?phone=${contactDigits}` : '';
-    return `<tr><td>${escapeHtml(item.transferDate || '—')}</td><td>${escapeHtml(item.id || '—')}</td><td>${escapeHtml(item.name || '—')}</td><td>${contactLink ? `<a class="realtime-contact-link" href="${contactLink}" target="_blank" rel="noopener">${escapeHtml(contact)}</a>` : '—'}</td><td class="realtime-market ${marketClass}">${escapeHtml(item.market || '未找到')}</td></tr>`;
+    return `<tr><td>${escapeHtml(item.transferDate || '—')}</td><td>${escapeHtml(item.id || '—')}</td><td>${escapeHtml(item.name || '—')}</td><td>${contactLink ? `<a class="realtime-contact-link" href="${contactLink}" target="_blank" rel="noopener noreferrer">${escapeHtml(contact)}</a>` : '—'}</td><td class="realtime-market ${marketClass}">${escapeHtml(item.market || '未找到')}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 async function queryRealtimeRecord() {
@@ -1680,7 +1695,7 @@ async function analyzeReports(token, base, sheetTitle, regionRows, provider, api
     if (addressRow) {
       // 必须整条采用同一配置行，避免新市区搭配旧国家或旧省州。
       [country, province, city] = addressRow;
-      log('第 ' + (startRow + index) + ' 行地址归属：' + [country, province, city].join(' → ') + '（' + (resolved.matchKind || 'AI封闭配置核对') + '）');
+      log('第 ' + (startRow + index) + ' 行地址已匹配配置（' + (resolved.matchKind || 'AI封闭配置核对') + '）。');
     }
     if (country) address.countryOk++; else address.countryFails.push({ row: startRow + index, value: rawCountry });
     if (province) address.provinceOk++; else address.provinceFails.push({ row: startRow + index, value: explicitProvince });
@@ -1748,7 +1763,7 @@ async function analyzeReports(token, base, sheetTitle, regionRows, provider, api
     // keep every row in the same eight-field layout, including blank fields.
     setAddressCard(addressText);
     setDropdownIfMissingOrInvalid('AJ', 17, category, categoryOptions);
-    log(`第 ${startRow + index} 行：年龄=${age || '未识别'}，职业=${profession || '未识别'}，地址=${addressText || '未识别'}，类别=${category || '未识别'}，AI类别=${parsed.category || '无'}，AJ选项=${categoryOptions.length}，国家=${countryDropdown || '未匹配下拉项'}，省州=${provinceDropdown || '未匹配下拉项'}，市区=${cityDropdown || '未匹配下拉项'}。`);
+    log(`第 ${startRow + index} 行字段处理完成：年龄${age ? '已识别' : '未识别'}，职业${profession ? '已识别' : '未识别'}，地址${addressRow ? '已匹配配置' : '待核实'}，类别${category ? '已识别' : '未识别'}。`);
   }
   if (addressUpdates.length) {
     await sheetsRequest(token, `${base}/values:batchUpdate`, { method: 'POST', body: JSON.stringify({ valueInputOption: 'RAW', data: addressUpdates }) });
@@ -2039,32 +2054,61 @@ $('#save').onclick = async () => {
 
 const syncConfigKeys = deviceConfigKeys;
 const localConfigKeys = ['groqApiKey', 'groqApiKeys', 'geminiApiKey', 'llmProvider', 'llmModel', 'regionTab', 'reportLabels'];
+const secretConfigKeys = ['groqApiKey', 'groqApiKeys', 'geminiApiKey'];
+const buildConfigExport = (config, local, includeKeys = false) => ({
+  format: 'form-filling-tool-config', version: 1, exportedAt: new Date().toISOString(),
+  sync: Object.fromEntries(syncConfigKeys.filter(key => Object.hasOwn(config, key)).map(key => [key, config[key]])),
+  local: Object.fromEntries(localConfigKeys.filter(key => Object.hasOwn(local, key) && (includeKeys || !secretConfigKeys.includes(key))).map(key => [key, local[key]]))
+});
+function parseConfigImport(payload) {
+  const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!isRecord(payload) || payload.format !== 'form-filling-tool-config' || payload.version !== 1 || !isRecord(payload.sync) || !isRecord(payload.local)) {
+    throw new Error('配置文件格式或版本不正确。');
+  }
+  const values = Object.fromEntries([
+    ...syncConfigKeys.filter(key => Object.hasOwn(payload.sync, key)).map(key => [key, payload.sync[key]]),
+    ...localConfigKeys.filter(key => Object.hasOwn(payload.local, key)).map(key => [key, payload.local[key]])
+  ]);
+  for (const [key, value] of Object.entries(values)) {
+    if (key === 'groqApiKeys') {
+      if (!Array.isArray(value) || value.length > 100 || value.some(item => typeof item !== 'string' || item.length > 1024)) throw new Error('API Key 列表格式不正确。');
+    } else if (key === 'reportLabels') {
+      if (!isRecord(value) || reportLabelKeys.some(label => Object.hasOwn(value, label) && (typeof value[label] !== 'string' || value[label].length > 256))) throw new Error('报告标题格式不正确。');
+      values[key] = Object.fromEntries(reportLabelKeys.filter(label => Object.hasOwn(value, label)).map(label => [label, value[label]]));
+    } else if (typeof value !== 'string' || value.length > 8192) {
+      throw new Error('配置字段格式不正确。');
+    }
+  }
+  if (values.llmProvider && !['groq', 'gemini'].includes(values.llmProvider)) throw new Error('模型服务商配置不正确。');
+  if (values.transferGroup && !['group1', 'group2', 'group3'].includes(values.transferGroup)) throw new Error('组别配置不正确。');
+  return values;
+}
 $('#exportConfig').onclick = async () => {
   const config = await getDeviceConfig();
-  const syncValues = Object.fromEntries(syncConfigKeys.map(key => [key, config[key]]));
   const localValues = await extensionStorage.local.get(localConfigKeys);
-  const payload = { format: 'form-filling-tool-config', version: 1, exportedAt: new Date().toISOString(), sync: syncValues, local: localValues };
+  const includeKeys = $('#exportIncludeKeys').checked;
+  const payload = buildConfigExport(config, localValues, includeKeys);
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob); const link = document.createElement('a');
   link.href = url; link.download = `form-filling-config-${new Date().toISOString().slice(0, 10)}.json`; link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000); $('#saveStatus').textContent = '配置已导出'; $('#saveStatus').style.color = '#188038';
+  setTimeout(() => URL.revokeObjectURL(url), 1000); $('#saveStatus').textContent = includeKeys ? '配置已导出（包含 API Key，请保密）' : '配置已导出（不含 API Key）'; $('#saveStatus').style.color = '#188038';
+  $('#exportIncludeKeys').checked = false;
 };
 $('#importConfig').onclick = () => $('#configFile').click();
 $('#configFile').onchange = async event => {
   const file = event.target.files?.[0]; if (!file) return;
   try {
+    if (file.size > 256 * 1024) throw new Error('配置文件超过 256 KB，请检查文件是否正确。');
     const payload = JSON.parse(await file.text());
-    if (payload?.format !== 'form-filling-tool-config' || !payload.sync || !payload.local) throw new Error('配置文件格式不正确。');
-    const syncValues = Object.fromEntries(syncConfigKeys.filter(key => Object.hasOwn(payload.sync, key)).map(key => [key, payload.sync[key]]));
-    const localValues = Object.fromEntries(localConfigKeys.filter(key => Object.hasOwn(payload.local, key)).map(key => [key, payload.local[key]]));
-    await extensionStorage.local.set({ ...syncValues, ...localValues, deviceConfigMigrated: true });
+    const values = parseConfigImport(payload);
+    await extensionStorage.local.set({ ...values, deviceConfigMigrated: true });
     await openAppNotice('配置导入成功，页面将重新加载。'); location.reload();
-  } catch (error) { await openAppNotice(`配置导入失败：${error.message || error}`); }
+  } catch (error) { await openAppNotice(error instanceof SyntaxError ? '配置导入失败：文件不是有效的 JSON。' : `配置导入失败：${error.message || error}`); }
   event.target.value = '';
 };
 $('#clearConfig').onclick = async () => {
   if (!await openAppConfirm('确定清除所有配置、API Key、报告历史和本地缓存吗？此操作不可撤销。', true)) return;
-  await extensionStorage.local.remove([...syncConfigKeys, ...localConfigKeys, 'deviceConfigMigrated', 'handoffStrictCity', 'handoffHistory', 'regionConfigCache', 'regionConfigLastCheckedAt', 'regionConfigLastCheckRows', 'googleApiConnectedAt', 'formTransferSource', 'formTransferCommitted', 'realtimeLastQueries']);
+  await extensionStorage.local.remove([...syncConfigKeys, ...localConfigKeys, 'deviceConfigMigrated', 'handoffStrictCity', 'handoffHistory', 'regionConfigCache', 'regionConfigLastCheckedAt', 'regionConfigLastCheckRows', 'googleApiConnectedAt', 'formTransferSource', 'formTransferCommitted', 'formTransferPending', 'llmRetryQueue', 'realtimeLastQueries']);
   await extensionStorage.local.set({ deviceConfigMigrated: true });
   if (extensionStorage.session) await extensionStorage.session.remove(['webAccessToken', 'webTokenExpiresAt']);
   await openAppNotice('配置已清除，页面将重新加载。'); location.reload();
@@ -2155,8 +2199,8 @@ $('#start').onclick = async () => {
     for (const item of handoffResults) handoffBySource[item.source || ''] = (handoffBySource[item.source || ''] || 0) + 1;
     log(`── 识别质量小结 ──`, 'success');
     log(`转交 ${result.rowCount} 行 · V 列补全 ${phoneFilled} 格 · AL 拆解成功 ${analysis.analyzed}/${analysis.totalReports}` + (analysis.failedRows.length ? `（失败：第 ${analysis.failedRows.join('、')} 行）` : ''), analysis.failedRows.length ? 'error' : 'success');
-    log(`地址识别 ${addr.total} 行：国家 ${addr.countryOk}/${addr.total} · 省 ${addr.provinceOk}/${addr.total}（其中地理推断 ${addr.geoInferred}·近邻推断 ${addr.nearInferred}）· 市/区 ${addr.cityOk}/${addr.total}` + (addr.countryFails.length ? `；国家未命中: ${addr.countryFails.slice(0, 6).map(f => `第${f.row}行"${f.value}"`).join(', ')}` : '') + (addr.cityFails.length ? `；市/区未命中: ${addr.cityFails.slice(0, 6).map(f => `第${f.row}行"${f.value}"`).join(', ')}` : ''), addr.countryOk === addr.total && addr.provinceOk === addr.total && addr.cityOk === addr.total ? 'success' : 'error');
-    if (addr.dropdownMisses.length) log(`已解析但目标表下拉缺少对应选项（未写入）：${addr.dropdownMisses.slice(0, 8).map(m => `第${m.row}行${m.column}="${m.value}"`).join(', ')}`, 'error');
+    log(`地址识别 ${addr.total} 行：国家 ${addr.countryOk}/${addr.total} · 省 ${addr.provinceOk}/${addr.total}（其中地理推断 ${addr.geoInferred}·近邻推断 ${addr.nearInferred}）· 市/区 ${addr.cityOk}/${addr.total}` + (addr.countryFails.length ? `；国家未命中: ${addr.countryFails.slice(0, 6).map(f => `第${f.row}行`).join(', ')}` : '') + (addr.cityFails.length ? `；市/区未命中: ${addr.cityFails.slice(0, 6).map(f => `第${f.row}行`).join(', ')}` : ''), addr.countryOk === addr.total && addr.provinceOk === addr.total && addr.cityOk === addr.total ? 'success' : 'error');
+    if (addr.dropdownMisses.length) log(`已解析但目标表下拉缺少对应选项（未写入）：${addr.dropdownMisses.slice(0, 8).map(m => `第${m.row}行${m.column}`).join(', ')}`, 'error');
     log(`交接链接匹配：城市级 ${handoffBySource['Y→C']} · 省级 ${handoffBySource['X→B']} · 国家级 ${handoffBySource['W→A']} · 未匹配 ${handoffBySource['']}`, handoffBySource[''] ? 'error' : 'success');
     $('#reportTab').click();
     await extensionStorage.local.remove(['formTransferSource', 'formTransferCommitted']);
