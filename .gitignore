@@ -19,6 +19,7 @@ form-filling-config-*.json
 
 # Local address/sample data — do not publish
 Adresse exemple.xlsx
+Video - 根据报告识别地址找出国家_省州_市区.csv
 
 # Local caches and generated data
 storage/

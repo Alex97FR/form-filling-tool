@@ -15,18 +15,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check extension before packaging
+        run: |
+          for script in background.js content.js dashboard.js options.js tests/address-matching.test.js; do
+            node --check "$script"
+          done
+          node tests/address-matching.test.js
 
       - name: Build release ZIP
         run: git archive --format=zip --output="Form-filling-tool-${GITHUB_REF_NAME}.zip" "${GITHUB_REF_NAME}"
 
       - name: Attest release ZIP
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: Form-filling-tool-${{ github.ref_name }}.zip
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: Form-filling-tool-${{ github.ref_name }}.zip
           generate_release_notes: true

@@ -76,8 +76,19 @@ chrome.alarms.onAlarm.addListener(async alarm => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'OPEN_DASHBOARD') {
-    openDashboard(message.query || '');
-    sendResponse({ ok: true });
-  }
+  if (sender.id !== chrome.runtime.id) return;
+  let senderUrl;
+  try { senderUrl = new URL(sender.url); } catch { return; }
+  if (senderUrl.origin !== 'https://docs.google.com' || !senderUrl.pathname.startsWith('/spreadsheets/')) return;
+  if (message?.type !== 'OPEN_DASHBOARD' || typeof message.query !== 'string') return;
+
+  const params = new URLSearchParams(message.query);
+  const entries = [...params.entries()];
+  const allowed = message.query === '?flow=transfer'
+    || (entries.length === 1 && entries[0][0] === 'phone' && /^\d{8,20}$/.test(entries[0][1]))
+    || (entries.length === 1 && entries[0][0] === 'record' && entries[0][1].length > 0 && entries[0][1].length <= 256);
+  if (!allowed) return;
+
+  void openDashboard(message.query);
+  sendResponse({ ok: true });
 });
