@@ -9,6 +9,12 @@ on:
   pull_request:
     branches:
       - master
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to retest and verify
+        required: true
+        type: string
 
 permissions: {}
 
@@ -17,12 +23,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the exact commit
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
           git init .
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            release_tag="$RELEASE_TAG_INPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            release_tag="$GITHUB_REF_NAME"
+          else
+            release_tag=""
+          fi
+          if [[ -n "$release_tag" ]]; then
+            [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+            [[ ${#release_tag} -le 100 ]]
+            git fetch --no-tags --depth=1 origin "refs/tags/$release_tag:refs/tags/$release_tag"
+          else
+            git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          fi
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [[ -n "$release_tag" ]]; then
+            test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$(git rev-parse HEAD)"
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then test "$(git rev-parse HEAD)" = "$GITHUB_SHA"; fi
+            node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME !== `v${manifest.version}`) process.exit(1);'
+          else
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          fi
 
       - name: Validate version and extension
         run: |
@@ -43,35 +70,54 @@ jobs:
           node tests/security.test.js
 
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
     needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      attestations: read
     steps:
       - name: Checkout the exact tagged commit
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
           git init .
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            release_tag="$RELEASE_TAG_INPUT"
+          else
+            release_tag="$GITHUB_REF_NAME"
+          fi
+          [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          [[ ${#release_tag} -le 100 ]]
+          git fetch --no-tags --depth=1 origin "refs/tags/$release_tag:refs/tags/$release_tag"
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          resolved_commit="$(git rev-parse HEAD)"
+          test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$resolved_commit"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then test "$resolved_commit" = "$GITHUB_SHA"; fi
+          node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME !== `v${manifest.version}`) process.exit(1);'
 
       - name: Build release ZIP
-        run: git archive --format=zip --output="Form-filling-tool-${GITHUB_REF_NAME}.zip" HEAD
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          release_tag="${RELEASE_TAG_INPUT:-$GITHUB_REF_NAME}"
+          git archive --format=zip --output="Form-filling-tool-${release_tag}.zip" HEAD
 
       - name: Publish and verify immutable release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
-          asset="Form-filling-tool-${GITHUB_REF_NAME}.zip"
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            if [[ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]; then
-              gh release upload "$GITHUB_REF_NAME" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
-              gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --verify-tag
+          release_tag="${RELEASE_TAG_INPUT:-$GITHUB_REF_NAME}"
+          asset="Form-filling-tool-${release_tag}.zip"
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]; then
+              gh release upload "$release_tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+              gh release edit "$release_tag" --repo "$GITHUB_REPOSITORY" --draft=false --verify-tag
             fi
           else
-            gh release create "$GITHUB_REF_NAME" "$asset" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+            gh release create "$release_tag" "$asset" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
           fi
-          gh release verify "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
-          gh release verify-asset "$GITHUB_REF_NAME" "$asset" --repo "$GITHUB_REPOSITORY"
+          gh release verify "$release_tag" --repo "$GITHUB_REPOSITORY"
+          gh release verify-asset "$release_tag" "$asset" --repo "$GITHUB_REPOSITORY"
