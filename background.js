@@ -24,6 +24,23 @@ const nextNoon = () => {
 };
 const scheduleRegionSync = () => chrome.alarms.create('region-config-noon', { when: nextNoon() });
 const spreadsheetId = url => url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)?.[1];
+const storageBoundaryReady = typeof chrome.storage.local.setAccessLevel === 'function'
+  ? chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(() => true, () => false)
+  : Promise.resolve(false);
+const MAX_TRANSFER_LENGTH = 1024 * 1024;
+const transferPendingIsValid = (pending, senderUrl) => {
+  if (!pending || typeof pending !== 'object' || typeof pending.text !== 'string'
+    || pending.text.length > MAX_TRANSFER_LENGTH || !Number.isFinite(pending.createdAt)) return false;
+  const age = Date.now() - pending.createdAt;
+  if (age < 0 || age > 10 * 60 * 1000) return false;
+  if (pending.targetTab !== undefined && (typeof pending.targetTab !== 'string' || pending.targetTab.length > 100)) return false;
+  try {
+    const targetUrl = new URL(pending.targetUrl);
+    return targetUrl.origin === senderUrl.origin && spreadsheetId(targetUrl.pathname) === spreadsheetId(senderUrl.pathname)
+      && (!targetUrl.search || targetUrl.search === senderUrl.search)
+      && (!targetUrl.hash || targetUrl.hash === senderUrl.hash);
+  } catch { return false; }
+};
 
 const rowsHash = rows => {
   const text = JSON.stringify(rows || []);
@@ -79,7 +96,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
   let senderUrl;
   try { senderUrl = new URL(sender.url); } catch { return; }
-  if (senderUrl.origin !== 'https://docs.google.com' || !senderUrl.pathname.startsWith('/spreadsheets/')) return;
+  if (senderUrl.origin !== 'https://docs.google.com' || !/^\/spreadsheets\/d\/[a-zA-Z0-9_-]+(?:\/|$)/.test(senderUrl.pathname)) return;
+
+  if (['TRANSFER_SOURCE_SET', 'TRANSFER_PENDING_GET', 'TRANSFER_PENDING_REMOVE'].includes(message?.type)) {
+    void (async () => {
+      if (!await storageBoundaryReady) throw new Error('Storage access boundary unavailable');
+      if (message.type === 'TRANSFER_SOURCE_SET') {
+        if (typeof message.text !== 'string' || !message.text.trim() || message.text.length > MAX_TRANSFER_LENGTH) throw new Error('Invalid transfer payload');
+        await chrome.storage.local.set({ formTransferSource: { text: message.text, createdAt: Date.now() } });
+        sendResponse({ ok: true });
+      } else if (message.type === 'TRANSFER_PENDING_GET') {
+        const { formTransferPending } = await chrome.storage.local.get('formTransferPending');
+        if (!transferPendingIsValid(formTransferPending, senderUrl)) {
+          if (formTransferPending) await chrome.storage.local.remove('formTransferPending');
+          sendResponse({ ok: true, pending: null });
+          return;
+        }
+        sendResponse({ ok: true, pending: formTransferPending });
+      } else {
+        await chrome.storage.local.remove('formTransferPending');
+        sendResponse({ ok: true });
+      }
+    })().catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
   if (message?.type !== 'OPEN_DASHBOARD' || typeof message.query !== 'string') return;
 
   const params = new URLSearchParams(message.query);

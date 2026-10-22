@@ -84,11 +84,31 @@ const openAppNotice = message => openAppDialog({ message });
 const openAppConfirm = (message, danger = false, labels = {}) => openAppDialog({ message, confirm: true, danger, ...labels });
 
 const parseSpreadsheetId = value => {
-  const match = value.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  let url;
+  try { url = new URL(value); } catch { throw new Error('目标表格网址中没有找到 Spreadsheet ID。'); }
+  const match = url.origin === 'https://docs.google.com' && !url.username && !url.password
+    ? url.pathname.match(/^\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]+)(?:\/|$)/)
+    : null;
   if (!match) throw new Error('目标表格网址中没有找到 Spreadsheet ID。');
   return match[1];
 };
+const isGoogleSheetsUrl = value => { try { parseSpreadsheetId(value); return true; } catch { return false; } };
 const quoteSheet = name => `'${(name || 'Sheet1').replaceAll("'", "''")}'`;
+const insertRowsRequest = (sheetId, startIndex, endIndex, inheritFromBefore) => ({
+  requests: [{ insertDimension: { range: { sheetId, dimension: 'ROWS', startIndex, endIndex }, inheritFromBefore } }]
+});
+const extendConditionalFormatsForInsertedRows = (rules, sheetId, startIndex, count, includeRangeEndingAtInsertion = false) => rules.flatMap((rule, index) => {
+  let changed = false;
+  const ranges = (rule.ranges || []).map(range => {
+    const end = range.endRowIndex;
+    const coversInsertion = range.sheetId === sheetId && (range.startRowIndex || 0) <= startIndex
+      && (end === undefined || end > startIndex || (includeRangeEndingAtInsertion && end === startIndex));
+    if (!coversInsertion || end === undefined) return range;
+    changed = true;
+    return { ...range, endRowIndex: end + count };
+  });
+  return changed ? [{ updateConditionalFormatRule: { index, rule: { ...rule, ranges } } }] : [];
+});
 const rawTsvRows = text => String(text || '').replace(/\r/g, '').split('\n').filter((row, index, rows) => row || index < rows.length - 1).map(row => row.split('\t').map(cell => String(cell).replace(/\uE000/g, '\n')));
 // fromColumnA: null = 自动猜测（存在 64 个以上单元格的行则认为从 A 列开始）；
 // true/false = 用户在写入前确认框里手动指定，覆盖猜测结果。
@@ -310,11 +330,90 @@ async function sheetsRequest(token, url, init = {}) {
     const apiDisabled = response.status === 403 && detail.includes('has not been used');
     const error = new Error(apiDisabled
       ? 'Google Sheets API 尚未启用。请在 Google Cloud 项目 357885944577 中启用 Sheets API，等待几分钟后重试。'
-      : `Google Sheets API 请求失败（HTTP ${response.status}）。`);
+      : response.status === 503
+        ? 'Google Sheets API 服务暂时不可用（HTTP 503）；可能是临时服务异常或请求、表格复杂度较高。'
+        : `Google Sheets API 请求失败（HTTP ${response.status}）。`);
     error.status = response.status;
     throw error;
   }
   return response.status === 204 ? null : response.json();
+}
+
+async function readTargetSheet(token, url, label, report = log) {
+  const controller = new AbortController();
+  const started = performance.now();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  report(`开始读取：${label}（最多等待 30 秒）。`);
+  try {
+    const result = await sheetsRequest(token, url, { signal: controller.signal });
+    report(`${label}：成功，用时 ${formatDuration(performance.now() - started)}。`, 'success');
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      error = new Error('读取超过 30 秒，已停止等待；不能仅凭超时判断是网络还是 Google 服务端问题。');
+      error.code = 'READ_TIMEOUT';
+    } else if (!error.status) {
+      error = new Error('读取未完成：网络连接异常、请求被拦截或返回内容无法解析。');
+    }
+    report(`${label}：失败，用时 ${formatDuration(performance.now() - started)}。${error.message}`, 'error');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function diagnoseTargetSheet(token, targetUrl, targetTab, report = log) {
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${parseSpreadsheetId(targetUrl)}`;
+  const sheetTitle = targetTab || 'Sheet1';
+  const sheet = quoteSheet(sheetTitle);
+  let passedReads = 0;
+  report('开始目标表只读诊断；报告只记录规模、状态和耗时，不包含单元格正文、表格网址或访问令牌。');
+  try {
+    const metadata = await readTargetSheet(token, `${base}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`, '表格基本信息', report);
+    const target = metadata.sheets?.find(item => item.properties.title === sheetTitle);
+    if (!target) { report('诊断停止：找不到配置的目标分表，请核对名称。', 'error'); return; }
+    const { rowCount = 0, columnCount = 0 } = target.properties.gridProperties || {};
+    const totalCells = metadata.sheets.reduce((total, item) => total + (item.properties.gridProperties?.rowCount || 0) * (item.properties.gridProperties?.columnCount || 0), 0);
+    report(`目标分表网格：${rowCount} 行 × ${columnCount} 列；整个文件 ${metadata.sheets.length} 个分表、${totalCells} 个已分配网格单元格（不等于非空数据量）。`);
+    if (!rowCount || !columnCount) { report('诊断停止：目标分表没有可读取的普通网格。', 'error'); return; }
+    if (columnCount < 65) report('目标分表少于 65 列，未覆盖完整 A:BM；正常转交的列范围需要检查。', 'error');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const details = await readTargetSheet(token, `${base}?ranges=${encodeURIComponent(sheet)}&fields=sheets(properties(sheetId),protectedRanges(warningOnly,requestingUserCanEdit),conditionalFormats(ranges))`, '保护及条件格式设置', report);
+      const settings = details.sheets?.find(item => item.properties.sheetId === target.properties.sheetId);
+      if (!settings) throw new Error('目标分表设置未返回。');
+      const protections = settings.protectedRanges || [];
+      const restricted = protections.filter(item => !item.warningOnly && !item.requestingUserCanEdit).length;
+      report(`目标分表保护范围 ${protections.length} 个，其中不允许当前授权账号编辑的范围 ${restricted} 个；条件格式规则 ${settings.conditionalFormats?.length || 0} 条。`);
+      if (restricted) report('存在不可编辑的保护范围，但不代表本次写入区域一定受限；保护设置也不能解释所有读取失败。');
+    } catch (error) {
+      if (error.status === 401) throw error;
+      report('保护及条件格式检查未完成，继续进行数据读取对照；不能据此判断写入权限。');
+    }
+    const lastColumn = sheetColumnName(Math.min(columnCount, 65));
+    const sampleEnd = Math.min(rowCount, 20);
+    const ranges = [`A1:A${sampleEnd}`, `A1:${lastColumn}${sampleEnd}`, `A:${lastColumn}`];
+    for (const range of ranges) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const data = await readTargetSheet(token, `${base}/values/${encodeURIComponent(`${sheet}!${range}`)}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`, `数据范围 ${range}`, report);
+      passedReads++;
+      const rows = data.values || [];
+      const cells = rows.reduce((total, row) => total + row.filter(value => value !== '' && value !== null && value !== undefined).length, 0);
+      report(`范围 ${range} 返回 ${rows.length} 行、${cells} 个非空单元格（不输出内容）。`);
+    }
+    report('结论：本次三项数据读取均成功，当前未复现读取卡住；仍需结合正常流程日志检查续传、插行或写入阶段。', 'success');
+  } catch (error) {
+    if (error.status === 401) throw error;
+    if (passedReads === 2) report('结论：少量行读取成功，整列范围读取失败；优先检查大范围读取和目标表处理负担，单次结果尚不能证明具体根因。', 'error');
+    else report('结论：基本信息或小范围读取已失败，暂不能将问题归为整列数据量过大。', 'error');
+    if (error.status === 503) report('HTTP 503：Google 服务端暂时无法处理此请求；可能是服务异常或表格、请求复杂度较高，不是权限拒绝的证据。');
+    else if (error.status === 403) report('HTTP 403：请求被拒绝，请检查 API 是否启用及扩展实际授权账号的访问权限。');
+    else if (error.status === 404) report('HTTP 404：表格不存在或当前授权账号无法访问，请核对目标网址和账号。');
+    else if (error.status === 429) report('HTTP 429：请求受到限流，请稍后再测，避免反复点击。');
+    report('已停止后续数据探测，没有自动重试失败请求。');
+  } finally {
+    report('诊断结束：未写入、清空或插入任何表格数据；只读诊断无法证明具备写入、插行权限。');
+  }
 }
 
 const readValues = (token, base, range) => sheetsRequest(token, `${base}/values/${encodeURIComponent(range)}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`);
@@ -1787,7 +1886,7 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
   // sheet during an interrupted run: never write the same rows twice.
   const profileKey = transferGroup === 'group2' ? 'group2-fixed-column-map-v1' : 'group1';
   const reusable = committed?.sourceText === text && committed.spreadsheetId === spreadsheetId && committed.sheetTitle === sheetTitle && (committed.profileKey || 'group1') === profileKey ? committed : null;
-  const metadata = await sheetsRequest(token, `${base}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))`);
+  const metadata = await readTargetSheet(token, `${base}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),conditionalFormats)`, '目标表基本信息及条件格式');
   const sheetInfo = metadata.sheets?.map(item => item.properties).find(item => item.title === sheetTitle);
   if (!sheetInfo) throw new Error(`找不到目标分表“${sheetTitle}”。`);
   const hasData = row => row?.some(value => value !== '' && value !== null && value !== undefined);
@@ -1829,7 +1928,7 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
       log('上次断点记录与本次选区行数不一致，按全新写入处理。');
       await extensionStorage.local.remove('formTransferCommitted');
     } else {
-      const check = await sheetsRequest(token, `${base}/values/${encodeURIComponent(`${sheet}!C${reusable.startRow}:BM${reusable.startRow + reusable.rowCount - 1}`)}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`);
+      const check = await readTargetSheet(token, `${base}/values/${encodeURIComponent(`${sheet}!C${reusable.startRow}:BM${reusable.startRow + reusable.rowCount - 1}`)}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`, '上次转交区域（续传核验）');
       const checkRows = check.values || [];
       let presentCells = 0;
       for (let index = 0; index < reusable.rowCount; index++) {
@@ -1861,7 +1960,7 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
     if (committed) await extensionStorage.local.remove('formTransferCommitted');
     // Fill the blank area immediately above the bottom data block. This keeps
     // new rows in the existing data area instead of creating empty rows below it.
-    const current = await sheetsRequest(token, base + '/values/' + encodeURIComponent(sheet + '!A:BM') + '?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE');
+    const current = await readTargetSheet(token, base + '/values/' + encodeURIComponent(sheet + '!A:BM') + '?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE', '目标分表 A:BM（定位最上面数据行）');
     const rows = current.values || [];
     const gridRowCount = Number(sheetInfo.gridProperties?.rowCount || 0);
     const firstDataIndex = rows.findIndex((row, index) => index >= dataStartRow - 1 && hasData(row));
@@ -1872,9 +1971,11 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
       const insertCount = Math.max(values.length - availableRows, 0);
       if (insertCount) {
         if (typeof sheetInfo?.sheetId !== 'number') throw new Error('拿不到分表 ID，无法增加目标表行数。');
+        const request = insertRowsRequest(sheetInfo.sheetId, gridRowCount, gridRowCount + insertCount, gridRowCount > 0);
+        request.requests.push(...extendConditionalFormatsForInsertedRows(sheetInfo.conditionalFormats || [], sheetInfo.sheetId, gridRowCount, insertCount, true));
+        log(`正在请求在目标表底部增加 ${insertCount} 行（尚未写入本次数据）。`);
         await sheetsRequest(token, base + ':batchUpdate', {
-          method: 'POST',
-          body: JSON.stringify({ requests: [{ insertDimension: { range: { sheetId: sheetInfo.sheetId, dimension: 'ROWS', startIndex: gridRowCount, endIndex: gridRowCount + insertCount } } }] })
+          method: 'POST', body: JSON.stringify(request)
         });
         log('目标表行数不足，已在底部增加 ' + insertCount + ' 行。', 'success');
       }
@@ -1888,9 +1989,11 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
       const insertCount = Math.max(values.length - availableRows, 0);
       if (insertCount) {
         if (typeof sheetInfo?.sheetId !== 'number') throw new Error('拿不到分表 ID，无法在数据块前增加行。');
+        const request = insertRowsRequest(sheetInfo.sheetId, firstDataIndex, firstDataIndex + insertCount, false);
+        request.requests.push(...extendConditionalFormatsForInsertedRows(sheetInfo.conditionalFormats || [], sheetInfo.sheetId, firstDataIndex, insertCount));
+        log(`正在请求在第 ${firstDataIndex + 1} 行前增加 ${insertCount} 行（尚未写入本次数据）。`);
         await sheetsRequest(token, base + ':batchUpdate', {
-          method: 'POST',
-          body: JSON.stringify({ requests: [{ insertDimension: { range: { sheetId: sheetInfo.sheetId, dimension: 'ROWS', startIndex: firstDataIndex, endIndex: firstDataIndex + insertCount } } }] })
+          method: 'POST', body: JSON.stringify(request)
         });
         const historyScope = makeHistoryScope(spreadsheetId, sheetTitle);
         await shiftHandoffHistoryRows(insertCount, historyScope, firstDataIndex + 1);
@@ -2039,13 +2142,13 @@ $('#save').onclick = async () => {
   const regionTab = $('#regionTab').value.trim();
   // Validate everything before writing anything: a failed save used to leave
   // half-old/half-new configuration behind.
-  if (!targetUrl.startsWith('https://docs.google.com/spreadsheets/')) { $('#saveStatus').textContent = '请输入有效的 Google 表格网址'; $('#saveStatus').style.color = '#c5221f'; return; }
+  if (!isGoogleSheetsUrl(targetUrl)) { $('#saveStatus').textContent = '请输入有效的 Google 表格网址'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!groupTab) { $('#saveStatus').textContent = '请填写群组配置分表名称'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!statusText) { $('#saveStatus').textContent = '请填写 E 列状态'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!aDateValue) { $('#saveStatus').textContent = '请选择 A 列日期/时间'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!regionTab) { $('#saveStatus').textContent = '请填写地区配置分表名称'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!llmKeys.length) { $('#saveStatus').textContent = '请填写 API Key'; $('#saveStatus').style.color = '#c5221f'; return; }
-  if (realtimeRecordUrl && !realtimeRecordUrl.startsWith('https://docs.google.com/spreadsheets/')) { $('#saveStatus').textContent = '请输入有效的实时记录表网址'; $('#saveStatus').style.color = '#c5221f'; return; }
+  if (realtimeRecordUrl && !isGoogleSheetsUrl(realtimeRecordUrl)) { $('#saveStatus').textContent = '请输入有效的实时记录表网址'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (realtimeRecordUrl && !realtimeRecordTab) { $('#saveStatus').textContent = '请填写实时记录表分表名称'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (realtimeRecordTab && !realtimeRecordUrl) { $('#saveStatus').textContent = '请填写实时记录表网址'; $('#saveStatus').style.color = '#c5221f'; return; }
   await extensionStorage.local.set({ targetUrl, targetTab, statusText, aDateValue, personnelId, groupTab, transferGroup, realtimeRecordUrl, realtimeRecordTab, deviceConfigMigrated: true, groqApiKey: llmProvider === 'groq' ? llmKeys[0] : '', groqApiKeys: llmProvider === 'groq' ? llmKeys : [], geminiApiKey: llmProvider === 'gemini' ? llmKeys[0] : '', llmProvider, llmModel, regionTab });
@@ -2114,8 +2217,38 @@ $('#clearConfig').onclick = async () => {
   await openAppNotice('配置已清除，页面将重新加载。'); location.reload();
 };
 
+$('#diagnoseTarget').onclick = async () => {
+  if ($('#start').disabled || $('#diagnoseTarget').disabled) return;
+  const targetUrl = $('#targetUrl').value.trim();
+  const targetTab = $('#targetTab').value.trim();
+  if (!isGoogleSheetsUrl(targetUrl)) { log('诊断前请在参数配置中填写有效的目标表格网址。', 'error'); return; }
+  const button = $('#diagnoseTarget');
+  const output = $('#targetDiagnosisReport');
+  button.disabled = true; button.textContent = '诊断中…';
+  $('#start').disabled = true; $('#copyTargetDiagnosis').disabled = true;
+  output.hidden = false; output.textContent = '';
+  const report = message => {
+    output.textContent += `${new Date().toLocaleTimeString()} ${message}\n`;
+    output.scrollTop = output.scrollHeight;
+  };
+  report('正在请求 Google 授权；仅诊断参数配置中当前填写的目标表。');
+  try {
+    await withFreshToken(token => diagnoseTargetSheet(token, targetUrl, targetTab, report));
+  } catch {
+    report('诊断未完成：授权未完成或刷新凭证后仍无法读取。请查看执行日志中的授权提示。');
+  } finally {
+    button.disabled = false; button.textContent = '诊断目标表';
+    $('#start').disabled = false; $('#copyTargetDiagnosis').disabled = false;
+  }
+};
+$('#copyTargetDiagnosis').onclick = async () => {
+  try { await copyText($('#targetDiagnosisReport').textContent); log('诊断结果已复制。', 'success'); }
+  catch { log('复制失败，请手动选择诊断结果复制。', 'error'); }
+};
+
 $('#clearLog').onclick = () => { $('#logs').innerHTML = ''; log('日志已清空。'); };
 $('#start').onclick = async () => {
+  if ($('#start').disabled) return;
   const { formTransferSource } = await extensionStorage.local.get({ formTransferSource: null });
   if (!formTransferSource?.text?.trim()) {
     const message = '未检测到本次选区数据。请先回到 A 表选择整行，按 Ctrl+C 复制，再右键点击“转交表格”。';
@@ -2156,6 +2289,7 @@ $('#start').onclick = async () => {
   const runStartedAt = performance.now();
   const startButton = $('#start');
   startButton.disabled = true; startButton.textContent = '执行中…';
+  $('#diagnoseTarget').disabled = true;
   setStep(0, 0); log('开始执行转交流程。');
   const text = formTransferSource.text;
   setStep(1, 1); $('#connectionText').textContent = '正在请求 Google 授权'; log('请求 Google Sheets 编辑权限。');
@@ -2163,7 +2297,7 @@ $('#start').onclick = async () => {
     const { result, phoneFilled, analysis, handoffResults } = await withFreshToken(async token => {
       await extensionStorage.local.set({ googleApiConnectedAt: Date.now() });
       $('#connectionDot').parentElement.classList.add('ok'); $('#connectionText').textContent = 'Google API 已授权'; log('Google 授权成功。', 'success');
-      setStep(2, 2); log('正在读取目标分表 C:BM，查找最后一条数据。');
+      setStep(2, 2); log('正在定位目标行：读取目标表设置，核验续传记录或查找最上面数据行。');
       const result = await transferWithSheetsApi(text, token, $('#targetUrl').value.trim(), $('#targetTab').value.trim(), $('#statusText').value.trim(), $('#aDateValue').value, $('#personnelId').value.trim(), startColumnChoice, transferGroup);
       const { groqApiKey, groqApiKeys = [], geminiApiKey, llmProvider = 'groq', llmModel: savedLlmModel = DEFAULT_GEMINI_MODEL, regionTab = '' } = await extensionStorage.local.get({ groqApiKey: '', groqApiKeys: [], geminiApiKey: '', llmProvider: 'groq', llmModel: DEFAULT_GEMINI_MODEL, regionTab: '' });
       const llmModel = normalizeGeminiModel(savedLlmModel);
@@ -2210,6 +2344,7 @@ $('#start').onclick = async () => {
     $('#heroText').textContent = '流程未完成，请查看执行日志。';
   } finally {
     startButton.disabled = false; startButton.textContent = '开始转交';
+    $('#diagnoseTarget').disabled = false;
   }
 };
 

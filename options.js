@@ -12,7 +12,13 @@ chrome.storage.local.get({ targetUrl: '', targetTab: '' }).then(async values => 
 });
 
 document.querySelector('#save').addEventListener('click', async () => {
-  if (!url.value.trim().startsWith('https://docs.google.com/spreadsheets/')) {
+  let validSheetUrl = false;
+  try {
+    const parsed = new URL(url.value.trim());
+    validSheetUrl = parsed.origin === 'https://docs.google.com' && !parsed.username && !parsed.password
+      && /^\/spreadsheets\/(?:u\/\d+\/)?d\/[a-zA-Z0-9_-]+(?:\/|$)/.test(parsed.pathname);
+  } catch {}
+  if (!validSheetUrl) {
     status.textContent = '请输入有效的 Google 表格网址';
     status.style.color = '#c5221f';
     return;

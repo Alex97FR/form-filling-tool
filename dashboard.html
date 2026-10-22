@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>表格自动化控制台</title>
+  <link rel="icon" type="image/png" href="assets/icon-32.png">
   <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
@@ -16,7 +17,8 @@
       <div class="hero card"><div><p class="eyebrow">当前流程</p><h2>转交表格</h2><p id="heroText">等待从 Google 表格接收选区数据。</p></div><div class="hero-banner" aria-hidden="true"><img id="heroBanner" src="assets/team-africa-banner.png" alt=""></div><button id="start" class="primary">开始转交</button></div>
       <nav class="view-tabs" aria-label="控制台页面"><button id="workflowTab" class="view-tab active">流程控制</button><button id="reportTab" class="view-tab">交接报告 <span id="reportCount">0</span></button><button id="deepTab" class="view-tab">深度查询</button><button id="realtimeTab" class="view-tab">实时记录</button><button id="configTab" class="view-tab">参数配置</button></nav>
       <div id="workflowView"><div class="card"><div class="section-title"><h3>流程进度</h3><span id="progressText">0 / 13</span></div><div class="phases" id="phases"></div></div>
-      <div class="card"><div class="section-title"><h3>执行日志</h3><button id="retryFailedRows" class="link" hidden>重跑上次失败行</button><button id="clearLog" class="link">清空</button></div><div class="logs" id="logs"></div></div></div>
+      <div class="card"><div class="section-title"><h3>执行日志</h3><button id="retryFailedRows" class="link" hidden>重跑上次失败行</button><button id="clearLog" class="link">清空</button></div><div class="logs" id="logs"></div></div>
+      <div class="card"><div class="section-title diagnosis-heading"><h3>目标表诊断</h3><div class="report-tools"><button id="diagnoseTarget" class="secondary" type="button">诊断目标表</button><button id="copyTargetDiagnosis" class="link" type="button" disabled>复制诊断结果</button></div></div><p class="tip">使用参数配置中的目标表，只读检查表格规模、保护设置和读取耗时。每项读取最多等待 30 秒；不写入、不插行，读取成功也不代表具备写入权限。请在转交停止后运行。</p><pre id="targetDiagnosisReport" class="logs diagnosis-report" role="status" aria-live="polite" hidden></pre></div></div>
       <div id="reportView" class="card report-view" hidden><div class="section-title"><div><h3>交接报告结果</h3></div><div class="report-tools"><label>按日期查看<select id="reportDateFilter"><option value="">本次结果</option></select></label><span id="reportStatus" class="badge">尚未生成</span><input id="reportRebuildDate" class="report-rebuild-date" type="date" title="留空表示重建全部日期"><button id="rebuildReports" class="secondary report-action-button">从目标表重建</button><button id="clearHandoffHistory" class="secondary report-action-button danger-action">清空历史</button><button id="rematchAllReports" class="secondary report-action-button">一键重新匹配</button><button id="copyAllReports" class="secondary report-action-button">复制全部</button></div></div><div id="reportResults" class="report-results"><div class="empty-report">流程完成后，这里会显示交接报告。</div></div></div>
       <div id="deepView" class="card deep-view" hidden><div class="section-title"><div><h3>深度查询</h3><p class="report-subtitle">输入手机号，在目标分表 Q 列定位人员并取出地址；再到群组配置分表按地址精确匹配那一行，返回跟进人员(E)、所属群组(F)、群组表格链接(G)与 13h00(K)/18h00(M)/21h30(P) 三个时段群组链接</p></div></div>
         <div class="deep-tools"><textarea id="deepPhone" rows="2" placeholder="输入或粘贴手机号，每行一个；也支持用空格、逗号、分号或 Tab 分隔（Ctrl+Enter 查询）"></textarea><button id="deepSearch" class="primary">查询</button></div>

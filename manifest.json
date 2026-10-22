@@ -2,8 +2,15 @@
   "manifest_version": 3,
   "name": "表格转交",
   "version": "0.2.10",
+  "minimum_chrome_version": "102",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1K0037vESCVcqUQ2KQc2ngsWysYZ0ICpmv57W2QRj3hT7vHg/w5l1UoRIClzZA9B6NwzxuzvTQ0unrrqJ02ufc1S4PlHPOVsejSMLiXOwCKkrJdPSQaq7Qw73/AwrAbFmUwAe5VPpf5LSWr61ZVYYpJ0yQ2hmoJeWEdUtXvUlQh53J+g9oWPy1Nh3eYEqfK/cRgd2zK7bVBGniq9SabsH6D/5YvgExDc/9GJCUmmu39FAMYK346TDIOa8rZVEBfBTajqdEqazSJ0zd1mhC4BTT9xfpYrll/slQsMZhdG5qNYUX5QEHGI0M6XDHmo9fpPM8uxaOXtwnVUynlme+HfwQIDAQAB",
   "description": "把 Google 表格当前选中的数据无格式转交到指定表格分表。",
+  "icons": {
+    "16": "assets/icon-16.png",
+    "32": "assets/icon-32.png",
+    "48": "assets/icon-48.png",
+    "128": "assets/icon-128.png"
+  },
   "permissions": ["storage", "clipboardRead", "clipboardWrite", "identity", "alarms"],
   "host_permissions": ["https://docs.google.com/spreadsheets/*", "https://sheets.googleapis.com/*", "https://api.groq.com/*", "https://generativelanguage.googleapis.com/*"],
   "oauth2": {
@@ -20,6 +27,10 @@
   "background": { "service_worker": "background.js" },
   "options_page": "options.html",
   "action": {
+    "default_icon": {
+      "16": "assets/icon-16.png",
+      "32": "assets/icon-32.png"
+    },
     "default_title": "打开表格自动化控制台"
   }
 }

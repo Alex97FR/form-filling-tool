@@ -4,6 +4,35 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+const insertRowsSource = source.match(/const insertRowsRequest = \(sheetId, startIndex, endIndex, inheritFromBefore\) => \(\{[\s\S]*?\n\}\);/)[0];
+const insertRowsContext = {};
+vm.runInNewContext(insertRowsSource + '\nglobalThis.insertRowsRequest = insertRowsRequest;', insertRowsContext);
+assert.equal(insertRowsContext.insertRowsRequest(7, 50, 53, false).requests[0].insertDimension.inheritFromBefore, false);
+assert.equal(insertRowsContext.insertRowsRequest(7, 1000, 1003, true).requests[0].insertDimension.inheritFromBefore, true);
+assert.equal(insertRowsContext.insertRowsRequest(7, 0, 3, false).requests[0].insertDimension.inheritFromBefore, false);
+const spreadsheetIdSource = source.slice(source.indexOf('const parseSpreadsheetId ='), source.indexOf('const quoteSheet ='));
+const spreadsheetIdContext = { URL };
+vm.runInNewContext(spreadsheetIdSource + '\nglobalThis.parseSpreadsheetId = parseSpreadsheetId;', spreadsheetIdContext);
+assert.equal(spreadsheetIdContext.parseSpreadsheetId('https://docs.google.com/spreadsheets/d/sheet_123/edit'), 'sheet_123');
+assert.equal(spreadsheetIdContext.parseSpreadsheetId('https://docs.google.com/spreadsheets/u/0/d/sheet_123/edit'), 'sheet_123');
+for (const url of ['https://docs.google.com.evil/spreadsheets/d/sheet_123/edit', 'https://evil.example/spreadsheets/d/sheet_123/edit', 'https://user@docs.google.com/spreadsheets/d/sheet_123/edit', 'http://docs.google.com/spreadsheets/d/sheet_123/edit']) {
+  assert.throws(() => spreadsheetIdContext.parseSpreadsheetId(url));
+}
+const extendRulesSource = source.match(/const extendConditionalFormatsForInsertedRows = \([\s\S]*?\n\}\);/)[0];
+const formatContext = {};
+vm.runInNewContext(extendRulesSource + '\nglobalThis.extend = extendConditionalFormatsForInsertedRows;', formatContext);
+const rules = [
+  { ranges: [{ sheetId: 7, startRowIndex: 50, endRowIndex: 100, startColumnIndex: 2, endColumnIndex: 5 }], booleanRule: { condition: { type: 'TEXT_EQ' } } },
+  { ranges: [{ sheetId: 7, startRowIndex: 0, endRowIndex: 50 }] },
+  { ranges: [{ sheetId: 8, startRowIndex: 0, endRowIndex: 100 }] },
+  { ranges: [{ sheetId: 7, startRowIndex: 0 }] }
+];
+const expanded = formatContext.extend(rules, 7, 50, 3);
+assert.equal(expanded.length, 1);
+assert.equal(expanded[0].updateConditionalFormatRule.rule.ranges[0].endRowIndex, 103);
+assert.equal(formatContext.extend([rules[3]], 7, 100, 3, true).length, 0); // Unbounded rules already cover appended rows.
+const appendedRule = { ranges: [{ sheetId: 7, startRowIndex: 0, endRowIndex: 100 }] };
+assert.equal(formatContext.extend([appendedRule], 7, 100, 3, true)[0].updateConditionalFormatRule.rule.ranges[0].endRowIndex, 103);
 const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
 const context = { URL, URLSearchParams, crypto: require('node:crypto').webcrypto };
 vm.runInNewContext(slice('function parseGoogleAuthRedirect', 'async function getGoogleToken')
@@ -92,7 +121,13 @@ const opened = [];
 const backgroundContext = { URL, URLSearchParams, chrome: {
   runtime: { id: 'our-extension', getURL: name => 'chrome-extension://our-extension/' + name, onInstalled: { addListener() {} }, onStartup: { addListener() {} }, onMessage: { addListener(fn) { onMessage = fn; } } },
   action: { onClicked: { addListener() {} } }, alarms: { onAlarm: { addListener() {} } },
-  tabs: { query: async () => [], create: async value => opened.push(value.url) }
+  tabs: { query: async () => [], create: async value => opened.push(value.url) },
+  storage: { local: {
+    values: {}, setAccessLevel: async options => { backgroundContext.storageLevel = options.accessLevel; },
+    set: async value => Object.assign(backgroundContext.chrome.storage.local.values, value),
+    get: async key => ({ [key]: backgroundContext.chrome.storage.local.values[key] }),
+    remove: async key => { delete backgroundContext.chrome.storage.local.values[key]; }
+  } }
 } };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'), backgroundContext);
 const sender = { id: 'our-extension', url: 'https://docs.google.com/spreadsheets/d/local/edit' };
@@ -106,8 +141,42 @@ for (const [message, origin] of [
 assert.equal(opened.length, 0);
 onMessage({ type: 'OPEN_DASHBOARD', query: '?phone=12345678' }, sender, () => {});
 
+async function checkStorageBridge() {
+  await Promise.resolve();
+  assert.equal(backgroundContext.storageLevel, 'TRUSTED_CONTEXTS');
+  const reply = message => new Promise(resolve => {
+    assert.equal(onMessage(message, sender, resolve), true);
+  });
+  assert.equal((await reply({ type: 'TRANSFER_SOURCE_SET', text: 'private row' })).ok, true);
+  assert.equal(backgroundContext.chrome.storage.local.values.formTransferSource.text, 'private row');
+  assert.equal((await reply({ type: 'TRANSFER_SOURCE_SET', text: 'x'.repeat(1024 * 1024 + 1) })).ok, false);
+  const validPending = { text: 'private row', createdAt: Date.now(), targetUrl: sender.url, targetTab: 'Target' };
+  backgroundContext.chrome.storage.local.values.formTransferPending = validPending;
+  const received = await reply({ type: 'TRANSFER_PENDING_GET' });
+  assert.equal(received.ok, true);
+  assert.equal(received.pending.text, validPending.text);
+  backgroundContext.chrome.storage.local.values.formTransferPending = { ...validPending, targetUrl: 'https://docs.google.com/spreadsheets/d/attacker/edit' };
+  const rejected = await reply({ type: 'TRANSFER_PENDING_GET' });
+  assert.equal(rejected.ok, true);
+  assert.equal(rejected.pending, null);
+  assert.equal(Object.hasOwn(backgroundContext.chrome.storage.local.values, 'formTransferPending'), false);
+  backgroundContext.chrome.storage.local.values.formTransferPending = validPending;
+  assert.equal((await reply({ type: 'TRANSFER_PENDING_REMOVE' })).ok, true);
+  assert.equal(Object.hasOwn(backgroundContext.chrome.storage.local.values, 'formTransferPending'), false);
+  assert.equal(onMessage({ type: 'TRANSFER_PENDING_GET' }, { ...sender, url: 'https://docs.google.com/spreadsheets.evil/d/local' }, () => assert.fail('Untrusted storage bridge sender accepted')), undefined);
+}
+
 // Verify the content script's real click handlers and old pending-transfer boundary.
 const content = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
+const sanitizeClipboardSource = content.match(/const sanitizeClipboardHtml = html => \{[\s\S]*?\n  \};/)[0];
+const clipboardSanitizer = {};
+vm.runInNewContext(sanitizeClipboardSource + '\nglobalThis.sanitize = sanitizeClipboardHtml;', clipboardSanitizer);
+const sanitizedClipboard = clipboardSanitizer.sanitize('<table><tr onclick="bad()"><td>row<img src="https://tracker.invalid/pixel" onerror="bad()">text</td></tr><script><img src="https://tracker.invalid/script"></script></table>');
+assert.match(sanitizedClipboard, /<tr><td>rowtext<\/td><\/tr>/);
+assert.doesNotMatch(sanitizedClipboard, /src=|onerror|onclick|<img|<script/i);
+const clipboardCellText = content.slice(content.indexOf('const cellText ='), content.indexOf('const rows ='));
+assert.match(clipboardCellText, /cloneNode\(true\)/);
+assert.doesNotMatch(clipboardCellText, /innerHTML/);
 const clicked = [];
 const contentContext = { URL, marker: 'data-form-transfer-item', MENU_LABEL: 'transfer',
   transfer: () => clicked.push('transfer'), deepQuery: () => clicked.push('deep'), realtimeRecord: () => clicked.push('realtime'),
@@ -136,7 +205,7 @@ assert.deepEqual(clicked, []);
 for (const item of menu.nodes) item.listeners.click({ isTrusted: true, stopPropagation() {} });
 assert.deepEqual(clicked.sort(), ['deep', 'realtime', 'transfer']);
 
-checkRequests().then(() => {
+Promise.all([checkRequests(), checkStorageBridge()]).then(() => {
   assert.deepEqual(opened, ['chrome-extension://our-extension/dashboard.html?phone=12345678']);
   console.log('OAuth, secret export/import, error privacy, message and clipboard boundary checks passed.');
 }).catch(error => { console.error(error); process.exitCode = 1; });

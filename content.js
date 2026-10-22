@@ -1,6 +1,12 @@
 (() => {
   const MENU_LABEL = '转交表格';
   const marker = 'data-form-transfer-item';
+  const requestBackground = async message => {
+    const result = await chrome.runtime.sendMessage(message);
+    if (!result?.ok) throw new Error('扩展安全边界不可用，请重新加载扩展后重试。');
+    return result;
+  };
+  const removePendingTransfer = () => requestBackground({ type: 'TRANSFER_PENDING_REMOVE' });
 
   const notify = (message, error = false) => {
     const node = document.createElement('div');
@@ -25,13 +31,12 @@
       for (const item of items) {
         if (item.types.includes('text/html')) {
           const html = await (await item.getType('text/html')).text();
-          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const doc = new DOMParser().parseFromString(sanitizeClipboardHtml(html), 'text/html');
           const cellText = cell => {
-            const holder = doc.createElement('div');
-            holder.innerHTML = cell.innerHTML
-              .replace(/<br\s*\/?>/gi, '\n')
-              .replace(/<\/(?:div|p|li)>/gi, '\n');
-            return (holder.textContent || '').replace(/\r\n/g, '\n').replace(/\t/g, ' ').replace(/\n/g, '\uE000').trim();
+            const copy = cell.cloneNode(true);
+            copy.querySelectorAll('br').forEach(node => node.replaceWith(doc.createTextNode('\n')));
+            copy.querySelectorAll('div,p,li').forEach(node => node.append(doc.createTextNode('\n')));
+            return (copy.textContent || '').replace(/\r\n/g, '\n').replace(/\t/g, ' ').replace(/\n/g, '\uE000').trim();
           };
           const rows = [...doc.querySelectorAll('tr')].map(row => [...row.querySelectorAll('th,td')]
             .map(cellText).join('\t'));
@@ -46,11 +51,17 @@
     return text;
   };
 
+  const sanitizeClipboardHtml = html => {
+    const safeTags = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'br', 'div', 'p', 'li', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'sub', 'sup']);
+    return html.replace(/<\s*(\/?)\s*([a-z][a-z0-9-]*)\b[^>]*>/gi, (tag, closing, name) =>
+      safeTags.has(name.toLowerCase()) ? `<${closing}${name.toLowerCase()}>` : '');
+  };
+
   const transfer = async () => {
     try {
       const text = await readSelection();
-      await chrome.storage.local.set({ formTransferSource: { text, createdAt: Date.now() } });
-      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD', query: '?flow=transfer' });
+      await requestBackground({ type: 'TRANSFER_SOURCE_SET', text });
+      await requestBackground({ type: 'OPEN_DASHBOARD', query: '?flow=transfer' });
       notify('已把选区交给自动化控制台。');
     } catch (error) {
       notify(error.message || '转交失败。', true);
@@ -67,7 +78,7 @@
         notify('请先选中号码所在单元格按 Ctrl+C，再点“深度查询此号码”。', true);
         return;
       }
-      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD', query: `?phone=${digits}` });
+      await requestBackground({ type: 'OPEN_DASHBOARD', query: `?phone=${digits}` });
       notify('正在打开深度查询…');
     } catch (error) {
       notify(error.message || '读取剪贴板失败，请重试。', true);
@@ -81,7 +92,7 @@
         notify('请先选中 O 列里的手机号或 ID 后按 Ctrl+C，再点“实时记录”。', true);
         return;
       }
-      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD', query: `?record=${encodeURIComponent(raw)}` });
+      await requestBackground({ type: 'OPEN_DASHBOARD', query: `?record=${encodeURIComponent(raw)}` });
       notify('正在打开实时记录…');
     } catch (error) {
       notify(error.message || '读取剪贴板失败，请重试。', true);
@@ -101,7 +112,7 @@
   const finishPendingTransfer = async pending => {
     const age = Date.now() - pending.createdAt;
     if (!Number.isFinite(age) || age < 0 || age > 10 * 60 * 1000 || typeof pending.text !== 'string') {
-      await chrome.storage.local.remove('formTransferPending');
+      await removePendingTransfer();
       return;
     }
     if (!pendingTargetMatches(location.href, pending.targetUrl)) return;
@@ -117,7 +128,7 @@
       }
       if (!tab) {
         notify(`没有找到目标分表“${pending.targetTab}”，已停止自动粘贴，避免贴错表。`, true);
-        await chrome.storage.local.remove('formTransferPending');
+        await removePendingTransfer();
         return;
       }
       tab.click();
@@ -140,7 +151,7 @@
     };
     done.onclick = async event => {
       if (!event.isTrusted) return;
-      await chrome.storage.local.remove('formTransferPending');
+      await removePendingTransfer();
       panel.remove();
     };
     panel.append(copy, done);
@@ -153,10 +164,13 @@
     document.body.append(panel);
   };
 
-  chrome.storage.local.get('formTransferPending').then(({ formTransferPending }) => {
+  requestBackground({ type: 'TRANSFER_PENDING_GET' }).then(({ pending }) => {
+    const formTransferPending = pending;
     if (formTransferPending) finishPendingTransfer(formTransferPending).catch(error => {
       notify(error.message || '目标表粘贴失败，请手动选择首个空行后按 Ctrl+V。', true);
     });
+  }).catch(error => {
+    notify(error.message || '无法安全读取待转交内容。', true);
   });
 
   const addMenuItem = menu => {
