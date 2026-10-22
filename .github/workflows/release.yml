@@ -46,7 +46,7 @@ jobs:
           if [[ -n "$release_tag" ]]; then
             test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$(git rev-parse HEAD)"
             if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then test "$(git rev-parse HEAD)" = "$GITHUB_SHA"; fi
-            node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME !== `v${manifest.version}`) process.exit(1);'
+            node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT.split("-")[0] !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME.split("-")[0] !== `v${manifest.version}`) process.exit(1);'
           else
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           fi
@@ -56,7 +56,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
             [[ ${#GITHUB_REF_NAME} -le 100 ]]
-            node -e 'const manifest = require("./manifest.json"); if (process.env.GITHUB_REF_NAME !== `v${manifest.version}`) process.exit(1);'
+            node -e 'const manifest = require("./manifest.json"); if (process.env.GITHUB_REF_NAME.split("-")[0] !== `v${manifest.version}`) process.exit(1);'
           fi
           git --version
           node --version
@@ -96,7 +96,7 @@ jobs:
           resolved_commit="$(git rev-parse HEAD)"
           test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$resolved_commit"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then test "$resolved_commit" = "$GITHUB_SHA"; fi
-          node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME !== `v${manifest.version}`) process.exit(1);'
+          node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT.split("-")[0] !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME.split("-")[0] !== `v${manifest.version}`) process.exit(1);'
 
       - name: Build release ZIP
         env:
