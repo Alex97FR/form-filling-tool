@@ -1,14 +1,16 @@
 const url = document.querySelector('#targetUrl');
 const tab = document.querySelector('#targetTab');
+const headerRows = document.querySelector('#targetHeaderRows');
 const status = document.querySelector('#status');
 
-chrome.storage.local.get({ targetUrl: '', targetTab: '' }).then(async values => {
+chrome.storage.local.get({ targetUrl: '', targetTab: '', targetHeaderRows: '2' }).then(async values => {
   if (!values.targetUrl && !values.targetTab) {
     const legacy = await chrome.storage.sync.get({ targetUrl: '', targetTab: '' });
     values = { ...values, ...legacy };
   }
   url.value = values.targetUrl;
   tab.value = values.targetTab;
+  headerRows.value = values.targetHeaderRows || '2';
 });
 
 document.querySelector('#save').addEventListener('click', async () => {
@@ -23,7 +25,9 @@ document.querySelector('#save').addEventListener('click', async () => {
     status.style.color = '#c5221f';
     return;
   }
-  await chrome.storage.local.set({ targetUrl: url.value.trim(), targetTab: tab.value.trim() });
+  if (!headerRows.reportValidity()) return;
+  const targetHeaderRows = headerRows.value === '' ? '2' : String(headerRows.valueAsNumber);
+  await chrome.storage.local.set({ targetUrl: url.value.trim(), targetTab: tab.value.trim(), targetHeaderRows });
   status.textContent = '已保存';
   status.style.color = '#188038';
 });

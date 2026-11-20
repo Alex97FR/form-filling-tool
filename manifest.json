@@ -12,7 +12,7 @@
     "128": "assets/icon-128.png"
   },
   "permissions": ["storage", "clipboardRead", "clipboardWrite", "identity", "alarms"],
-  "host_permissions": ["https://docs.google.com/spreadsheets/*", "https://sheets.googleapis.com/*", "https://api.groq.com/*", "https://generativelanguage.googleapis.com/*"],
+  "host_permissions": ["https://docs.google.com/spreadsheets/*", "https://sheets.googleapis.com/*", "https://generativelanguage.googleapis.com/*"],
   "oauth2": {
     "client_id": "357885944577-1rriecqp10u98ogkqi9p1h71a25mco3o.apps.googleusercontent.com",
     "scopes": ["https://www.googleapis.com/auth/spreadsheets"]

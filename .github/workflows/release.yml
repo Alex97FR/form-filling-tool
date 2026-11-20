@@ -21,8 +21,11 @@ permissions: {}
 jobs:
   checks:
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.checkout.outputs.commit }}
     steps:
       - name: Checkout the exact commit
+        id: checkout
         env:
           RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
@@ -50,6 +53,7 @@ jobs:
           else
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           fi
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Validate version and extension
         run: |
@@ -81,6 +85,7 @@ jobs:
       - name: Checkout the exact tagged commit
         env:
           RELEASE_TAG_INPUT: ${{ inputs.tag }}
+          CHECKED_COMMIT: ${{ needs.checks.outputs.commit }}
         run: |
           git init .
           git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
@@ -95,6 +100,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           resolved_commit="$(git rev-parse HEAD)"
           test "$(git rev-parse "refs/tags/$release_tag^{commit}")" = "$resolved_commit"
+          test "$resolved_commit" = "$CHECKED_COMMIT"
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then test "$resolved_commit" = "$GITHUB_SHA"; fi
           node -e 'const manifest = require("./manifest.json"); if (process.env.RELEASE_TAG_INPUT && process.env.RELEASE_TAG_INPUT.split("-")[0] !== `v${manifest.version}`) process.exit(1); if (process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME.split("-")[0] !== `v${manifest.version}`) process.exit(1);'
 

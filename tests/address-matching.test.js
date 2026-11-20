@@ -7,10 +7,9 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
 const context = {};
 const helpers = source.slice(source.indexOf('const compactKey ='), source.indexOf('const showRegionCacheStatus'));
-const groups = source.slice(source.indexOf('const normalizeTransferGroup ='), source.indexOf('// Identity is scoped'));
 vm.runInNewContext(source.match(/^const normalize = .*$/m)[0] + '\n' + source.match(/^const unique = .*$/m)[0]
-  + '\n' + helpers + '\n' + groups + '\nglobalThis.logic = { resolveConfiguredAddress, sameCountry, findGroupRow, matchRegion, regionPathKey };', context);
-const { resolveConfiguredAddress: resolve, sameCountry, findGroupRow, matchRegion } = context.logic;
+  + '\n' + helpers + '\nglobalThis.logic = { resolveConfiguredAddress, sameCountry, matchRegion, regionPathKey };', context);
+const { resolveConfiguredAddress: resolve, sameCountry, matchRegion } = context.logic;
 
 // Representative rows copied from the user's 2026-10-04 hierarchy CSV.
 const rows = [
@@ -61,11 +60,46 @@ assert.equal(sameCountry('加蓬 Gabon', 'Gabon 加蓬'), true);
 assert.equal(sameCountry('喀麦隆', 'Cameroun'), true);
 assert.equal(sameCountry('喀麦隆', '多哥'), false);
 assert.equal(matchRegion('Yaounde 4', ['Yaoundé VI', 'Yaoundé III']), '');
-assert.equal(findGroupRow([rows[11], rows[12]], 'Congo', '', 'Kabinda').found, null);
-assert.equal(findGroupRow([rows[1]], 'Gabon', 'Libreville', 'Nzeng Ayong').source, 'Y→C');
-assert.equal(findGroupRow([['刚果 Congo', 'Lomami', 'Nzengayong'], rows[1]], 'Gabon', 'Libreville', 'Nzengayong').found, rows[1]);
-assert.equal(findGroupRow([rows[2], rows[3]], 'Gabon', 'Libreville', '5-STFO').found, rows[2]);
-assert.equal(findGroupRow([rows[2], rows[3]], 'Gabon', 'Libreville', 'STFO').found, null);
+const portugueseRows = [
+  ['Moçambique', 'Maputo', 'Matola/Liberdade'],
+  ['Moçambique', 'Maputo', 'Matola/Mahlampswene，Malhampsene'],
+  ['Moçambique', 'Maputo', 'Matola/Matola D, Ngalunde'],
+  ['Moçambique', 'Maputo', 'Matola/Ngalunde'],
+  ['Cabo Verde（佛得角）'],
+  ['Guiné-Bissau（几内亚比绍）'],
+  ['São Tomé e Príncipe（圣多美和普林西比）'],
+  ['Suazilândia,斯威士兰', 'Africa do Sul-sul']
+];
+for (const [alias, index] of [['Mozambique', 0], ['Cape Verde', 4], ['Guinea-Bissau', 5], ['Sao Tome and Principe', 6], ['Eswatini', 7]]) {
+  assert.equal(resolve({ country: alias }, portugueseRows).country, portugueseRows[index][0]);
+}
+assert.equal(resolve({ country: 'Mozambique', explicit_province: 'Maputo', explicit_city: 'Liberdade' }, portugueseRows).city, portugueseRows[0][2]);
+assert.equal(resolve({ country: 'Mozambique', explicit_province: 'Maputo', explicit_city: 'Malhampsene' }, portugueseRows).city, portugueseRows[1][2]);
+const ngalunde = resolve({ country: 'Mozambique', explicit_province: 'Maputo', explicit_city: 'Ngalunde' }, portugueseRows);
+assert.equal(ngalunde.ambiguous, true);
+assert.equal(ngalunde.city, '');
+const swahiliProvinces = [
+  'Kagera', 'Geita', 'Kigoma', 'Singida', 'Tabora', 'Katavi', 'Shinyanga', 'Arusha', 'Kilimanjaro',
+  'Mwanza', 'Dodoma', 'Tanga', 'Manyara', 'Simiyu', 'Mara', 'Dar es Salaam', 'Zanzibar', 'Pwani',
+  'Lindi', 'Mtwara', 'Ruvuma', 'Njombe', 'Iringa', 'Mbeya', 'Rukwa', 'Morogoro'
+];
+const drCongo = 'Democratic Republic of the Congo (DR Congo)';
+const swahiliCountries = ['Tanzania', 'Kenya', 'Congo', drCongo, 'Uganda', 'Rwanda', 'Malawi', 'Burundi', 'South Africa', 'Zambia'];
+const swahiliRows = [['国家', '省州', '市区'],
+  ...swahiliProvinces.map(province => ['Tanzania', province]),
+  ...swahiliCountries.slice(1).map(country => [country]), [], []];
+for (const province of swahiliProvinces) {
+  for (const field of ['explicit_province', 'explicit_city']) {
+    const resolved = resolve({ country: 'Tanzania', [field]: province }, swahiliRows);
+    assert.deepEqual([resolved.country, resolved.province, resolved.city], ['Tanzania', province, '']);
+  }
+}
+for (const country of [...swahiliCountries.slice(1), 'DR Congo', 'DRC', 'Republic of the Congo']) {
+  const resolved = resolve({ country }, swahiliRows);
+  const expected = { 'DR Congo': drCongo, DRC: drCongo, 'Republic of the Congo': 'Congo' }[country] || country;
+  assert.deepEqual([resolved.country, resolved.province, resolved.city], [expected, '', '']);
+  assert.equal(resolved.countryRows.length, 1);
+}
 if (process.argv[2]) {
   const hierarchy = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   let checked = 0;
@@ -92,8 +126,9 @@ context.log = message => logs.push(message);
 context.showRegionCacheStatus = () => {};
 context.cacheTime = String;
 const dropdown = { W: [...new Set(rows.map(row => row[0]))], X: [...new Set(rows.map(row => row[1]))], Y: [...new Set(rows.map(row => row[2]))] };
-async function checkWrites(fields, currentPath = [], options = dropdown, fallback = { row: null }) {
+async function checkWrites(fields, currentPath = [], options = dropdown, fallback = { row: null }, currentAge, hierarchy = rows) {
   const current = [];
+  current[0] = currentAge;
   [current[4], current[5], current[6]] = currentPath;
   const writes = [];
   let calls = 0;
@@ -102,11 +137,22 @@ async function checkWrites(fields, currentPath = [], options = dropdown, fallbac
   context.repairMissingRegionDropdowns = async (_token, _base, _sheet, _start, _end, _rows, _tab, value) => value;
   context.callLlmWithRetry = async () => (++calls === 1 ? fields : fallback);
   context.sheetsRequest = async (_token, _url, request) => { writes.push(...JSON.parse(request.body).data); };
-  await context.flows.analyzeReports('local', 'local', 'Target', rows, 'local', 'local', 3, 1, null, 'Regions', options);
-  return { writes: Object.fromEntries(writes.filter(item => /![WXY]3$/.test(item.range)).map(item => [item.range.split('!')[1], item.values[0][0]])), calls };
+  await context.flows.analyzeReports('local', 'local', 'Target', hierarchy, 'local', 3, 1, null, 'Regions', options);
+  return { writes: Object.fromEntries(writes.filter(item => /![WXY]3$/.test(item.range)).map(item => [item.range.split('!')[1], item.values[0][0]])), calls,
+    age: writes.find(item => item.range.endsWith('!S3'))?.values[0][0] };
 }
 async function checkFlows() {
+  const swahiliDropdown = { W: swahiliCountries, X: swahiliProvinces, Y: [] };
+  assert.deepEqual((await checkWrites({ country: 'Tanzania', explicit_city: 'Dar es Salaam' },
+    [], swahiliDropdown, undefined, undefined, swahiliRows)).writes, { W3: 'Tanzania', X3: 'Dar es Salaam' });
+  assert.deepEqual((await checkWrites({ country: 'DR Congo' },
+    [], swahiliDropdown, undefined, undefined, swahiliRows)).writes, { W3: drCongo });
+  assert.deepEqual((await checkWrites({ country: 'DR Congo' },
+    [], { ...swahiliDropdown, W: ['Congo'] }, undefined, undefined, swahiliRows)).writes, {});
   const fields = { country: 'Gabon', explicit_city: 'Libreville', explicit_quartier: 'Nzeng Ayong' };
+  assert.equal((await checkWrites({ ...fields, age: 'Age 25, phone 123456' })).age, undefined);
+  assert.equal((await checkWrites({ ...fields, age: '25' }, [], dropdown, undefined, 'Old report text')).age, 25);
+  assert.equal((await checkWrites({ ...fields, age: 25 }, [], dropdown, undefined, 30)).age, undefined);
   assert.deepEqual((await checkWrites(fields, [rows[0][0], rows[0][1], rows[1][2]])).writes, { W3: rows[1][0], X3: rows[1][1] });
   assert.deepEqual((await checkWrites(fields, rows[0])).writes, {}); // Preserve a complete valid existing path.
   assert.deepEqual((await checkWrites(fields, [], { ...dropdown, X: ['Estuaire Province'] })).writes, {});
@@ -134,6 +180,14 @@ async function checkFlows() {
   assert.equal(reads, 1);
   context.readValues = async () => ({ values: [] });
   assert.deepEqual(Array.from(await context.flows.syncRegionConfig('local', '/spreadsheets/test', 'Regions', true)), [rows[1]]);
+  const cacheBefore = stored;
+  const privateRows = [['国家', 'Region', 'District'], ['Example', 'Region A', 'District B']];
+  context.readValues = async () => ({ values: privateRows });
+  assert.deepEqual(Array.from(await context.flows.syncRegionConfig('local', '/spreadsheets/test', 'Private', false, true)), privateRows);
+  assert.equal(stored, cacheBefore);
+  context.readValues = async () => ({ values: [] });
+  await assert.rejects(context.flows.syncRegionConfig('local', '/spreadsheets/test', 'Private', false, true), /专用地区配置/);
+  assert.equal(stored, cacheBefore);
   console.log('Address matching, write consistency and cache refresh checks passed.');
 }
 checkFlows().catch(error => { console.error(error); process.exitCode = 1; });

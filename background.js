@@ -1,7 +1,6 @@
 const dashboardUrl = () => chrome.runtime.getURL('dashboard.html');
 
-// 已有控制台标签页就复用它（带上新参数导航并置前），没有才新建——
-// 反复深度查询不会堆积一堆控制台标签。
+// 复用已有控制台标签页。
 const openDashboard = async (query = '') => {
   const target = `${dashboardUrl()}${query}`;
   const tabs = await chrome.tabs.query({ url: `${dashboardUrl()}*` }).catch(() => []);
@@ -23,7 +22,7 @@ const nextNoon = () => {
   return date.getTime();
 };
 const scheduleRegionSync = () => chrome.alarms.create('region-config-noon', { when: nextNoon() });
-const spreadsheetId = url => url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)?.[1];
+const spreadsheetId = pathname => pathname.match(/^\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]+)(?:\/|$)/)?.[1];
 const storageBoundaryReady = typeof chrome.storage.local.setAccessLevel === 'function'
   ? chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(() => true, () => false)
   : Promise.resolve(false);
@@ -50,9 +49,12 @@ const rowsHash = rows => {
 };
 
 async function syncRegionConfigAtNoon() {
-  const { targetUrl } = await chrome.storage.local.get({ targetUrl: '' });
-  const { regionTab = '' } = await chrome.storage.local.get({ regionTab: '' });
-  const id = spreadsheetId(targetUrl);
+  const { targetUrl, regionTab, transferGroup } = await chrome.storage.local.get({ targetUrl: '', regionTab: '', transferGroup: 'group1' });
+  if (['group3', 'group4', 'group5'].includes(transferGroup)) return;
+  let parsedUrl;
+  try { parsedUrl = new URL(targetUrl); } catch { return; }
+  if (parsedUrl.origin !== 'https://docs.google.com' || parsedUrl.username || parsedUrl.password) return;
+  const id = spreadsheetId(parsedUrl.pathname);
   if (!id || !regionTab) return;
   let token = '';
   try {
@@ -96,7 +98,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
   let senderUrl;
   try { senderUrl = new URL(sender.url); } catch { return; }
-  if (senderUrl.origin !== 'https://docs.google.com' || !/^\/spreadsheets\/d\/[a-zA-Z0-9_-]+(?:\/|$)/.test(senderUrl.pathname)) return;
+  if (sender.frameId !== 0 || senderUrl.origin !== 'https://docs.google.com' || !spreadsheetId(senderUrl.pathname)) return;
 
   if (['TRANSFER_SOURCE_SET', 'TRANSFER_PENDING_GET', 'TRANSFER_PENDING_REMOVE'].includes(message?.type)) {
     void (async () => {
@@ -105,30 +107,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (typeof message.text !== 'string' || !message.text.trim() || message.text.length > MAX_TRANSFER_LENGTH) throw new Error('Invalid transfer payload');
         await chrome.storage.local.set({ formTransferSource: { text: message.text, createdAt: Date.now() } });
         sendResponse({ ok: true });
-      } else if (message.type === 'TRANSFER_PENDING_GET') {
-        const { formTransferPending } = await chrome.storage.local.get('formTransferPending');
-        if (!transferPendingIsValid(formTransferPending, senderUrl)) {
-          if (formTransferPending) await chrome.storage.local.remove('formTransferPending');
-          sendResponse({ ok: true, pending: null });
-          return;
-        }
-        sendResponse({ ok: true, pending: formTransferPending });
       } else {
-        await chrome.storage.local.remove('formTransferPending');
-        sendResponse({ ok: true });
+        const { formTransferPending } = await chrome.storage.local.get('formTransferPending');
+        const pending = transferPendingIsValid(formTransferPending, senderUrl) ? formTransferPending : null;
+        if (message.type === 'TRANSFER_PENDING_GET') {
+          sendResponse({ ok: true, pending });
+        } else {
+          if (pending && message.createdAt === pending.createdAt) await chrome.storage.local.remove('formTransferPending');
+          sendResponse({ ok: true });
+        }
       }
     })().catch(() => sendResponse({ ok: false }));
     return true;
   }
 
-  if (message?.type !== 'OPEN_DASHBOARD' || typeof message.query !== 'string') return;
-
-  const params = new URLSearchParams(message.query);
-  const entries = [...params.entries()];
-  const allowed = message.query === '?flow=transfer'
-    || (entries.length === 1 && entries[0][0] === 'phone' && /^\d{8,20}$/.test(entries[0][1]))
-    || (entries.length === 1 && entries[0][0] === 'record' && entries[0][1].length > 0 && entries[0][1].length <= 256);
-  if (!allowed) return;
+  if (message?.type !== 'OPEN_DASHBOARD' || message.query !== '?flow=transfer') return;
 
   void openDashboard(message.query);
   sendResponse({ ok: true });

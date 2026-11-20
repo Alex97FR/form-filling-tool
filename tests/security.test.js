@@ -4,6 +4,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+const startHandler = source.slice(source.indexOf("$('#start').onclick"), source.indexOf('const updateRetryFailedButton'));
+const authorizedTransfer = startHandler.slice(startHandler.indexOf('await withFreshToken'));
+assert.doesNotMatch(authorizedTransfer, /\$\('#(?:targetUrl|targetTab|statusText|aDateValue|personnelId)'\)\.value/);
 const insertRowsSource = source.match(/const insertRowsRequest = \(sheetId, startIndex, endIndex, inheritFromBefore\) => \(\{[\s\S]*?\n\}\);/)[0];
 const insertRowsContext = {};
 vm.runInNewContext(insertRowsSource + '\nglobalThis.insertRowsRequest = insertRowsRequest;', insertRowsContext);
@@ -35,14 +38,14 @@ const appendedRule = { ranges: [{ sheetId: 7, startRowIndex: 0, endRowIndex: 100
 assert.equal(formatContext.extend([appendedRule], 7, 100, 3, true)[0].updateConditionalFormatRule.rule.ranges[0].endRowIndex, 103);
 const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
 const context = { URL, URLSearchParams, crypto: require('node:crypto').webcrypto };
-vm.runInNewContext(slice('function parseGoogleAuthRedirect', 'async function getGoogleToken')
+vm.runInNewContext(spreadsheetIdSource + '\n' + slice('function parseGoogleAuthRedirect', 'async function getGoogleToken')
   + '\n' + slice('async function sheetsRequest', 'const readValues =')
-  + '\n' + slice('function parseModelJson', 'const callLlm =')
+  + '\n' + slice('function parseModelJson', 'async function callLlmWithRetry')
   + '\n' + source.match(/^const deviceConfigKeys = .*$/m)[0]
-  + '\n' + source.match(/^const reportLabelKeys = .*$/m)[0]
+  + '\n' + slice('const normalizeTransferGroup =', 'async function copyText')
   + '\n' + slice('const syncConfigKeys =', "$('#exportConfig').onclick")
-  + '\nglobalThis.security = { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGroq, callGemini, buildConfigExport, parseConfigImport };', context);
-const { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGroq, callGemini, buildConfigExport, parseConfigImport } = context.security;
+  + '\nglobalThis.security = { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, buildConfigExport, parseConfigImport };', context);
+const { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, buildConfigExport, parseConfigImport } = context.security;
 
 const redirect = 'https://extension-id.chromiumapp.org/';
 const state = 'random-request-state';
@@ -61,24 +64,38 @@ for (const url of [
   response({ error: 'secret-provider-detail' })
 ]) assert.throws(() => parseGoogleAuthRedirect(url, redirect, state));
 
-const sync = { targetUrl: 'https://docs.google.com/spreadsheets/d/local/edit', targetTab: 'Target', unexpected: 'discard' };
+const sync = { targetUrl: 'https://docs.google.com/spreadsheets/d/local/edit', targetTab: 'Target', targetHeaderRows: '7', aDateValue: '11:15 a.m.', aDateOptions: '10 a.m.\n11:15 a.m.', unexpected: 'discard' };
 const local = { groqApiKey: 'fake-groq-key', groqApiKeys: ['fake-groq-key'], geminiApiKey: 'fake-gemini-key', llmProvider: 'groq', regionTab: 'Regions', unexpected: 'discard' };
 const exported = buildConfigExport(sync, local);
-assert.equal(exported.local.llmProvider, 'groq');
+assert.equal(Object.hasOwn(exported.local, 'llmProvider'), false);
 for (const key of ['groqApiKey', 'groqApiKeys', 'geminiApiKey', 'unexpected']) assert.equal(Object.hasOwn(exported.local, key), false);
 assert.equal(Object.hasOwn(exported.sync, 'unexpected'), false);
-assert.equal(buildConfigExport(sync, local, true).local.groqApiKey, 'fake-groq-key');
-const imported = parseConfigImport({ ...exported, local: { ...exported.local, reportLabels: { brebis: '<script>plain text</script>', unexpected: 'discard' }, unexpected: 'discard' } });
+for (const [group, regionKey] of [['group4', 'regionTabGroup4'], ['group5', 'regionTabGroup5']]) {
+  const backup = buildConfigExport({ ...sync, transferGroup: group }, { ...local, [regionKey]: 'Team Regions' });
+  assert.equal(parseConfigImport(backup).transferGroup, group);
+  assert.equal(parseConfigImport(backup)[regionKey], 'Team Regions');
+}
+assert.equal(Object.hasOwn(buildConfigExport(sync, local, true).local, 'geminiApiKey'), false);
+const imported = parseConfigImport({ ...exported, local: { ...local, reportLabels: { brebis: '<script>plain text</script>', unexpected: 'discard' }, unexpected: 'discard' } });
 assert.equal(imported.targetTab, 'Target');
-assert.equal(Object.hasOwn(imported, 'groqApiKey'), false); // Importing a key-free export preserves existing device keys.
-assert.equal(Object.hasOwn(imported.reportLabels, 'unexpected'), false);
+assert.equal(imported.targetHeaderRows, '7');
+assert.equal(imported.aDateOptions, sync.aDateOptions);
+assert.equal(imported.aDateValue, sync.aDateValue);
+const timeOptionsContext = {};
+vm.runInNewContext(source.match(/^const parseADateOptions = .*$/m)[0] + '\nglobalThis.parseOptions = parseADateOptions;', timeOptionsContext);
+assert.deepEqual(Array.from(timeOptionsContext.parseOptions(' 10 a.m.\r\n\n11:15 a.m.\n10 a.m. ')), ['10 a.m.', '11:15 a.m.']);
+assert.equal(imported.geminiApiKey, 'fake-gemini-key');
+assert.equal(Object.hasOwn(imported, 'groqApiKey'), false);
+assert.equal(Object.hasOwn(imported, 'llmProvider'), false);
+assert.equal(Object.hasOwn(parseConfigImport(exported), 'geminiApiKey'), false);
+assert.equal(Object.hasOwn(imported, 'reportLabels'), false);
 for (const payload of [
   { ...exported, version: 999 }, { ...exported, sync: [] }, { ...exported, local: null },
-  { ...exported, local: { groqApiKeys: 'not-an-array' } },
-  { ...exported, local: { groqApiKeys: [42] } },
-  { ...exported, local: { llmProvider: 'attacker' } },
   { ...exported, sync: { targetUrl: { url: 'not-a-string' } } },
-  { ...exported, local: { reportLabels: { brebis: [] } } }
+  { ...exported, sync: { targetUrl: 'https://other.example/spreadsheets/d/local/edit' } },
+  { ...exported, sync: { targetHeaderRows: '-1' } },
+  { ...exported, sync: { targetHeaderRows: '2.5' } },
+  { ...exported, sync: { targetHeaderRows: '2147483647' } }
 ]) assert.throws(() => parseConfigImport(payload));
 const prototypePayload = JSON.parse(JSON.stringify(exported).replace('"local":{', '"local":{"__proto__":{"polluted":true},'));
 assert.equal(Object.hasOwn(parseConfigImport(prototypePayload), '__proto__'), false);
@@ -88,6 +105,37 @@ for (const raw of [canary, '{"name":"' + canary, '{"name":' + canary + '}']) {
   assert.throws(() => parseModelJson(raw, 'Test'), error => /JSON/.test(error.message) && !error.message.includes(canary));
 }
 assert.equal(parseModelJson('{"name":"local fixture"}', 'Test').name, 'local fixture');
+
+async function checkRetryTarget() {
+  const elements = {
+    '#retryFailedRows': { disabled: false },
+    '#targetUrl': { value: 'https://docs.google.com/spreadsheets/d/other/edit' },
+    '#targetTab': { value: 'Target' },
+    '#targetHeaderRows': { value: '2', validity: { valid: true } }
+  };
+  const queue = { rows: [5], spreadsheetId: 'original', targetTab: 'Target' };
+  const logs = [];
+  const notices = [];
+  let authRequests = 0;
+  const retryContext = {
+    URL, $: selector => elements[selector], targetDataStartRow: () => 3,
+    extensionStorage: { local: { get: async () => ({ llmRetryQueue: queue }) } },
+    log: message => logs.push(message),
+    openAppNotice: async message => notices.push(message),
+    getGoogleToken: async () => { authRequests++; }
+  };
+  vm.runInNewContext(spreadsheetIdSource + '\n' + source.slice(source.indexOf("$('#retryFailedRows').onclick")), retryContext);
+  await elements['#retryFailedRows'].onclick();
+  assert.equal(authRequests, 0);
+  assert.match(logs[0], /切换回上次转交/);
+  assert.equal(elements['#retryFailedRows'].disabled, false);
+  delete queue.spreadsheetId;
+  delete queue.targetTab;
+  await elements['#retryFailedRows'].onclick();
+  assert.equal(authRequests, 0);
+  assert.match(notices[0], /人工核对并处理这些行：5/);
+  assert.deepEqual(queue, { rows: [5] });
+}
 
 async function checkRequests() {
   context.GOOGLE_CLIENT_ID = 'public-client-id';
@@ -110,7 +158,6 @@ async function checkRequests() {
   let bodyReads = 0;
   context.fetch = async () => ({ ok: false, status: 401, text: async () => { bodyReads++; return canary; } });
   await assert.rejects(() => sheetsRequest('token', 'https://sheets.googleapis.com/local'), error => error.status === 401 && !error.message.includes(canary));
-  await assert.rejects(() => callGroq('key', 'system', 'report'), error => error.status === 401 && !error.message.includes(canary));
   await assert.rejects(() => callGemini('key', 'gemini-local', 'system', 'report'), error => !error.message.includes(canary));
   assert.equal(bodyReads, 1); // Only Sheets reads the body to identify the known API-disabled condition.
 }
@@ -118,7 +165,7 @@ async function checkRequests() {
 // Exercise the real service worker's sender and command boundary.
 let onMessage;
 const opened = [];
-const backgroundContext = { URL, URLSearchParams, chrome: {
+const backgroundContext = { URL, chrome: {
   runtime: { id: 'our-extension', getURL: name => 'chrome-extension://our-extension/' + name, onInstalled: { addListener() {} }, onStartup: { addListener() {} }, onMessage: { addListener(fn) { onMessage = fn; } } },
   action: { onClicked: { addListener() {} } }, alarms: { onAlarm: { addListener() {} } },
   tabs: { query: async () => [], create: async value => opened.push(value.url) },
@@ -130,16 +177,17 @@ const backgroundContext = { URL, URLSearchParams, chrome: {
   } }
 } };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8'), backgroundContext);
-const sender = { id: 'our-extension', url: 'https://docs.google.com/spreadsheets/d/local/edit' };
+const sender = { id: 'our-extension', frameId: 0, url: 'https://docs.google.com/spreadsheets/d/local/edit' };
 for (const [message, origin] of [
   [{ type: 'OPEN_DASHBOARD', query: '?flow=transfer' }, { ...sender, id: 'other-extension' }],
+  [{ type: 'OPEN_DASHBOARD', query: '?flow=transfer' }, { ...sender, frameId: 1 }],
   [{ type: 'OPEN_DASHBOARD', query: '?flow=transfer' }, { ...sender, url: 'https://attacker.example/spreadsheets/' }],
-  [{ type: 'OPEN_DASHBOARD', query: '?phone=12345678&record=extra' }, sender],
-  [{ type: 'OPEN_DASHBOARD', query: '?phone=javascript:alert(1)' }, sender],
-  [{ type: 'OPEN_DASHBOARD', query: '?record=' + 'x'.repeat(257) }, sender]
+  [{ type: 'OPEN_DASHBOARD', query: '?phone=12345678' }, sender],
+  [{ type: 'OPEN_DASHBOARD', query: '?flow=transfer&phone=12345678' }, sender],
+  [{ type: 'OPEN_DASHBOARD', query: '?record=12345678' }, sender]
 ]) onMessage(message, origin, () => assert.fail('Untrusted message accepted'));
 assert.equal(opened.length, 0);
-onMessage({ type: 'OPEN_DASHBOARD', query: '?phone=12345678' }, sender, () => {});
+onMessage({ type: 'OPEN_DASHBOARD', query: '?flow=transfer' }, sender, response => assert.equal(response.ok, true));
 
 async function checkStorageBridge() {
   await Promise.resolve();
@@ -159,31 +207,31 @@ async function checkStorageBridge() {
   const rejected = await reply({ type: 'TRANSFER_PENDING_GET' });
   assert.equal(rejected.ok, true);
   assert.equal(rejected.pending, null);
-  assert.equal(Object.hasOwn(backgroundContext.chrome.storage.local.values, 'formTransferPending'), false);
+  assert.equal((await reply({ type: 'TRANSFER_PENDING_REMOVE', createdAt: validPending.createdAt })).ok, true);
+  assert.equal(Object.hasOwn(backgroundContext.chrome.storage.local.values, 'formTransferPending'), true);
   backgroundContext.chrome.storage.local.values.formTransferPending = validPending;
-  assert.equal((await reply({ type: 'TRANSFER_PENDING_REMOVE' })).ok, true);
+  assert.equal((await reply({ type: 'TRANSFER_PENDING_REMOVE', createdAt: validPending.createdAt - 1 })).ok, true);
+  assert.equal(Object.hasOwn(backgroundContext.chrome.storage.local.values, 'formTransferPending'), true);
+  assert.equal((await reply({ type: 'TRANSFER_PENDING_REMOVE', createdAt: validPending.createdAt })).ok, true);
   assert.equal(Object.hasOwn(backgroundContext.chrome.storage.local.values, 'formTransferPending'), false);
   assert.equal(onMessage({ type: 'TRANSFER_PENDING_GET' }, { ...sender, url: 'https://docs.google.com/spreadsheets.evil/d/local' }, () => assert.fail('Untrusted storage bridge sender accepted')), undefined);
 }
 
 // Verify the content script's real click handlers and old pending-transfer boundary.
 const content = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
-const sanitizeClipboardSource = content.match(/const sanitizeClipboardHtml = html => \{[\s\S]*?\n  \};/)[0];
-const clipboardSanitizer = {};
-vm.runInNewContext(sanitizeClipboardSource + '\nglobalThis.sanitize = sanitizeClipboardHtml;', clipboardSanitizer);
-const sanitizedClipboard = clipboardSanitizer.sanitize('<table><tr onclick="bad()"><td>row<img src="https://tracker.invalid/pixel" onerror="bad()">text</td></tr><script><img src="https://tracker.invalid/script"></script></table>');
-assert.match(sanitizedClipboard, /<tr><td>rowtext<\/td><\/tr>/);
-assert.doesNotMatch(sanitizedClipboard, /src=|onerror|onclick|<img|<script/i);
+const clipboardReader = content.slice(content.indexOf('const readSelection ='), content.indexOf('const transfer ='));
+assert.match(clipboardReader, /createElement\('template'\)/);
+assert.match(clipboardReader, /template\.content\.querySelectorAll\('tr'\)/);
+assert.doesNotMatch(clipboardReader, /DOMParser|append\(template|append\(copy/);
 const clipboardCellText = content.slice(content.indexOf('const cellText ='), content.indexOf('const rows ='));
 assert.match(clipboardCellText, /cloneNode\(true\)/);
 assert.doesNotMatch(clipboardCellText, /innerHTML/);
 const clicked = [];
 const contentContext = { URL, marker: 'data-form-transfer-item', MENU_LABEL: 'transfer',
-  transfer: () => clicked.push('transfer'), deepQuery: () => clicked.push('deep'), realtimeRecord: () => clicked.push('realtime'),
+  transfer: () => clicked.push('transfer'),
   document: { createElement: () => ({ style: {}, attributes: {}, listeners: {},
     setAttribute(name, value) { this.attributes[name] = value; },
-    addEventListener(name, callback) { this.listeners[name] = callback; },
-    after(node) { menu.nodes.push(node); }
+    addEventListener(name, callback) { this.listeners[name] = callback; }
   }) }
 };
 const menu = { nodes: [], querySelector(selector) { return this.nodes.find(node => Object.hasOwn(node.attributes, selector.slice(1, -1))); }, prepend(node) { this.nodes.unshift(node); } };
@@ -203,9 +251,9 @@ addMenuItem(menu);
 for (const item of menu.nodes) item.listeners.click({ isTrusted: false, stopPropagation() {} });
 assert.deepEqual(clicked, []);
 for (const item of menu.nodes) item.listeners.click({ isTrusted: true, stopPropagation() {} });
-assert.deepEqual(clicked.sort(), ['deep', 'realtime', 'transfer']);
+assert.deepEqual(clicked, ['transfer']);
 
-Promise.all([checkRequests(), checkStorageBridge()]).then(() => {
-  assert.deepEqual(opened, ['chrome-extension://our-extension/dashboard.html?phone=12345678']);
+Promise.all([checkRequests(), checkStorageBridge(), checkRetryTarget()]).then(() => {
+  assert.deepEqual(opened, ['chrome-extension://our-extension/dashboard.html?flow=transfer']);
   console.log('OAuth, secret export/import, error privacy, message and clipboard boundary checks passed.');
 }).catch(error => { console.error(error); process.exitCode = 1; });

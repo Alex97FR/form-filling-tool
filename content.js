@@ -6,7 +6,7 @@
     if (!result?.ok) throw new Error('扩展安全边界不可用，请重新加载扩展后重试。');
     return result;
   };
-  const removePendingTransfer = () => requestBackground({ type: 'TRANSFER_PENDING_REMOVE' });
+  const removePendingTransfer = pending => requestBackground({ type: 'TRANSFER_PENDING_REMOVE', createdAt: pending.createdAt });
 
   const notify = (message, error = false) => {
     const node = document.createElement('div');
@@ -31,14 +31,17 @@
       for (const item of items) {
         if (item.types.includes('text/html')) {
           const html = await (await item.getType('text/html')).text();
-          const doc = new DOMParser().parseFromString(sanitizeClipboardHtml(html), 'text/html');
+          // Template contents stay inert while we extract cell text.
+          const template = document.createElement('template');
+          template.innerHTML = html;
           const cellText = cell => {
             const copy = cell.cloneNode(true);
-            copy.querySelectorAll('br').forEach(node => node.replaceWith(doc.createTextNode('\n')));
-            copy.querySelectorAll('div,p,li').forEach(node => node.append(doc.createTextNode('\n')));
+            copy.querySelectorAll('script,style').forEach(node => node.remove());
+            copy.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+            copy.querySelectorAll('div,p,li').forEach(node => node.append('\n'));
             return (copy.textContent || '').replace(/\r\n/g, '\n').replace(/\t/g, ' ').replace(/\n/g, '\uE000').trim();
           };
-          const rows = [...doc.querySelectorAll('tr')].map(row => [...row.querySelectorAll('th,td')]
+          const rows = [...template.content.querySelectorAll('tr')].map(row => [...row.querySelectorAll('th,td')]
             .map(cellText).join('\t'));
           if (rows.length && rows.some(row => row.includes('\t'))) text = rows.join('\n');
         }
@@ -49,12 +52,6 @@
     }
     if (!text.trim()) throw new Error('没有读到选区内容，请先选择 B 列到 BL 列的行。');
     return text;
-  };
-
-  const sanitizeClipboardHtml = html => {
-    const safeTags = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'br', 'div', 'p', 'li', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'sub', 'sup']);
-    return html.replace(/<\s*(\/?)\s*([a-z][a-z0-9-]*)\b[^>]*>/gi, (tag, closing, name) =>
-      safeTags.has(name.toLowerCase()) ? `<${closing}${name.toLowerCase()}>` : '');
   };
 
   const transfer = async () => {
@@ -68,42 +65,11 @@
     }
   };
 
-  // 深度查询：号码所在单元格先 Ctrl+C，再点本菜单。直接读剪贴板里的号码，
-  // 控制台会带着 ?phone= 打开并自动出结果。
-  const deepQuery = async () => {
-    try {
-      const raw = await navigator.clipboard.readText();
-      const digits = raw.replace(/\D/g, '');
-      if (digits.length < 8) {
-        notify('请先选中号码所在单元格按 Ctrl+C，再点“深度查询此号码”。', true);
-        return;
-      }
-      await requestBackground({ type: 'OPEN_DASHBOARD', query: `?phone=${digits}` });
-      notify('正在打开深度查询…');
-    } catch (error) {
-      notify(error.message || '读取剪贴板失败，请重试。', true);
-    }
-  };
-
-  const realtimeRecord = async () => {
-    try {
-      const raw = (await navigator.clipboard.readText()).trim();
-      if (!raw) {
-        notify('请先选中 O 列里的手机号或 ID 后按 Ctrl+C，再点“实时记录”。', true);
-        return;
-      }
-      await requestBackground({ type: 'OPEN_DASHBOARD', query: `?record=${encodeURIComponent(raw)}` });
-      notify('正在打开实时记录…');
-    } catch (error) {
-      notify(error.message || '读取剪贴板失败，请重试。', true);
-    }
-  };
-
   const pendingTargetMatches = (currentUrl, targetUrl) => {
     try {
       const current = new URL(currentUrl);
       const target = new URL(targetUrl);
-      const sheetId = url => url.pathname.match(/^\/spreadsheets\/d\/([a-zA-Z0-9_-]+)(?:\/|$)/)?.[1];
+      const sheetId = url => url.pathname.match(/^\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]+)(?:\/|$)/)?.[1];
       return current.origin === 'https://docs.google.com' && target.origin === current.origin
         && Boolean(sheetId(target)) && sheetId(current) === sheetId(target)
         && (!target.search || current.search === target.search) && (!target.hash || current.hash === target.hash);
@@ -112,7 +78,6 @@
   const finishPendingTransfer = async pending => {
     const age = Date.now() - pending.createdAt;
     if (!Number.isFinite(age) || age < 0 || age > 10 * 60 * 1000 || typeof pending.text !== 'string') {
-      await removePendingTransfer();
       return;
     }
     if (!pendingTargetMatches(location.href, pending.targetUrl)) return;
@@ -128,7 +93,7 @@
       }
       if (!tab) {
         notify(`没有找到目标分表“${pending.targetTab}”，已停止自动粘贴，避免贴错表。`, true);
-        await removePendingTransfer();
+        await removePendingTransfer(pending);
         return;
       }
       tab.click();
@@ -151,7 +116,7 @@
     };
     done.onclick = async event => {
       if (!event.isTrusted) return;
-      await removePendingTransfer();
+      await removePendingTransfer(pending);
       panel.remove();
     };
     panel.append(copy, done);
@@ -190,40 +155,6 @@
       item.addEventListener('mouseleave', () => item.style.background = '');
       item.addEventListener('click', event => { if (!event.isTrusted) return; event.stopPropagation(); transfer(); });
       menu.prepend(item);
-    }
-    // 第二项：深度查询此号码（紧挨在“转交表格”下面，样式一致）。
-    const deepMarker = 'data-deep-query-item';
-    let deepItem = menu.querySelector(`[${deepMarker}]`);
-    if (!deepItem) {
-      deepItem = document.createElement('div');
-      deepItem.setAttribute('role', 'menuitem');
-      deepItem.setAttribute(deepMarker, 'true');
-      deepItem.textContent = '🔍 深度查询此号码';
-      Object.assign(deepItem.style, {
-        cursor: 'pointer', padding: '8px 16px', color: '#202124',
-        font: '14px Arial'
-      });
-      deepItem.addEventListener('mouseenter', () => deepItem.style.background = '#f1f3f4');
-      deepItem.addEventListener('mouseleave', () => deepItem.style.background = '');
-      deepItem.addEventListener('click', event => { if (!event.isTrusted) return; event.stopPropagation(); deepQuery(); });
-      const transferItem = menu.querySelector(`[${marker}]`);
-      if (transferItem) transferItem.after(deepItem); else menu.prepend(deepItem);
-    }
-    const realtimeMarker = 'data-realtime-record-item';
-    let realtimeItem = menu.querySelector(`[${realtimeMarker}]`);
-    if (!realtimeItem) {
-      realtimeItem = document.createElement('div');
-      realtimeItem.setAttribute('role', 'menuitem');
-      realtimeItem.setAttribute(realtimeMarker, 'true');
-      realtimeItem.textContent = '⏱ 实时记录';
-      Object.assign(realtimeItem.style, {
-        cursor: 'pointer', padding: '8px 16px', color: '#202124',
-        font: '14px Arial'
-      });
-      realtimeItem.addEventListener('mouseenter', () => realtimeItem.style.background = '#f1f3f4');
-      realtimeItem.addEventListener('mouseleave', () => realtimeItem.style.background = '');
-      realtimeItem.addEventListener('click', event => { if (!event.isTrusted) return; event.stopPropagation(); realtimeRecord(); });
-      if (deepItem) deepItem.after(realtimeItem); else if (transferItem) transferItem.after(realtimeItem); else menu.prepend(realtimeItem);
     }
   };
 

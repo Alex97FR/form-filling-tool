@@ -178,6 +178,93 @@ async function main() {
   assert.equal(elements['#start'].disabled, false);
   assert.match(elements['#targetDiagnosisReport'].textContent, /诊断未完成/);
   assert.ok(!elements['#targetDiagnosisReport'].textContent.includes(canary));
+  const stopAfterWrite = new Error('Captured first write');
+  const transfer = {
+    parseSpreadsheetId: () => 'local-target',
+    quoteSheet: title => title,
+    parseTransferValues: () => [['new data']],
+    stripNumericTextMarker: value => value,
+    extensionStorage: { local: { get: async () => ({}) } },
+    readTargetSheet: async (token, url) => url.includes('/values/')
+      ? { values: [['header'], ['header'], []] }
+      : { sheets: [{ properties: { title: 'Target', gridProperties: { rowCount: 10 } } }] },
+    log() {},
+    setStep() {},
+    async sheetsRequest(urlToken, url, request) {
+      transfer.writeRange = JSON.parse(request.body).data[0].range;
+      throw stopAfterWrite;
+    }
+  };
+  vm.runInNewContext(slice('const targetDataStartRow', 'const GOOGLE_CLIENT_ID')
+    + slice('const sheetColumnName', 'const group2ColumnMap')
+    + slice('async function transferWithSheetsApi', 'const parseADateOptions')
+    + '\nglobalThis.startRow = targetDataStartRow;', transfer);
+  assert.equal(transfer.startRow(''), 3);
+  assert.equal(transfer.startRow('0'), 1);
+  const dropdownReads = {
+    unique: values => [...new Set(values)],
+    quoteSheet: value => value,
+    readValues: async (token, base, range) => {
+      if (range === 'Broken!A2:A') throw Object.assign(new Error('Invalid range'), { status: 400 });
+      return { values: [] };
+    },
+    log() {},
+    sheetsRequest: async (token, url, request) => {
+      assert.equal(request, undefined);
+      return { sheets: [{ data: [{ rowData: [{ values: [{ dataValidation: { condition: {
+        type: 'ONE_OF_RANGE', values: [{ userEnteredValue: '=Broken!$A$2:$A' }]
+      } } }] }] }] }] };
+    }
+  };
+  vm.runInNewContext(slice('async function readDropdownRange', 'async function repairMissingRegionDropdowns')
+    + slice('async function fillPhoneCountries', 'const LLM_SYSTEM_PROMPT'), dropdownReads);
+  const phoneResult = await dropdownReads.fillPhoneCountries('token', '/test', 'Target', 29, 5);
+  assert.equal(phoneResult.count, 0);
+  assert.equal(phoneResult.dropdown.vRangeUnavailable, true);
+  for (const [headerRows, firstDataRow] of [['2', 3], ['3', 4], ['7', 8]]) {
+    await assert.rejects(transfer.transferWithSheetsApi('new data', 'token', targetUrl, 'Target', '', '', '', null, 'group1', headerRows), stopAfterWrite);
+    assert.equal(transfer.writeRange, `Target!C${firstDataRow}:R${firstDataRow}`);
+  }
+  const committed = { sourceText: 'new data', spreadsheetId: 'local-target', sheetTitle: 'Target', startRow: 3, rowCount: 1 };
+  transfer.extensionStorage.local.get = async () => ({ formTransferCommitted: committed });
+  transfer.parseTransferValues = () => [['original C', 'keep D', 'original E', 'restore F', 'original G', '']];
+  const current = ['time', '', 'original C', 'keep D', 'status', '', '', 'collaborator edit'];
+  let writes = [];
+  let confirmations = [];
+  let readCount = 0;
+  let confirm = false;
+  let changedWhileConfirming = false;
+  const readMetadata = transfer.readTargetSheet;
+  transfer.readTargetSheet = async (token, url) => {
+    if (!url.includes('/values/')) return readMetadata(token, url);
+    readCount++;
+    assert.match(url, /valueRenderOption=FORMULA/);
+    return { values: [[...current, ...(changedWhileConfirming && readCount === 2 ? ['new edit'] : [])]] };
+  };
+  transfer.openAppConfirm = async message => { confirmations.push(message); return confirm; };
+  transfer.sheetsRequest = async (token, url, request) => {
+    writes.push({ url, body: JSON.parse(request.body) });
+    throw stopAfterWrite;
+  };
+  const resume = () => transfer.transferWithSheetsApi('new data', 'token', targetUrl, 'Target', 'status', 'time', '', null, 'group1', '2');
+  await assert.rejects(resume(), /已取消续传/);
+  assert.match(confirmations[0], /H3/);
+  assert.doesNotMatch(confirmations[0], /collaborator edit/);
+  assert.equal(writes.length, 0);
+  confirm = true;
+  changedWhileConfirming = true;
+  readCount = 0;
+  await assert.rejects(resume(), /确认期间目标区域有变化/);
+  assert.equal(writes.length, 0);
+  changedWhileConfirming = false;
+  await assert.rejects(resume(), stopAfterWrite);
+  assert.deepEqual(writes[0].body.data[0].values, [[null, null, null, 'restore F', null, '']]);
+  writes = [];
+  confirmations = [];
+  current[7] = '';
+  await assert.rejects(resume(), stopAfterWrite);
+  assert.equal(confirmations.length, 0);
+  assert.deepEqual(writes[0].body.data[0].values, [[null, null, null, 'restore F', null, null]]);
   console.log('Target diagnostics tests passed (read-only, range comparison, HTTP errors, deadlines, redaction, UI).');
 }
 const watchdog = setTimeout(() => { console.error('Target diagnostics tests did not complete.'); process.exitCode = 1; }, 5000);
