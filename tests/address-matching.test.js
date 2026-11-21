@@ -60,6 +60,18 @@ assert.equal(sameCountry('加蓬 Gabon', 'Gabon 加蓬'), true);
 assert.equal(sameCountry('喀麦隆', 'Cameroun'), true);
 assert.equal(sameCountry('喀麦隆', '多哥'), false);
 assert.equal(matchRegion('Yaounde 4', ['Yaoundé VI', 'Yaoundé III']), '');
+const strictRows = [
+  ['Example Country', 'Capital District', 'Riverside North'],
+  ['Example Country', 'Other Region', 'Hilltown']
+];
+const strictFields = { country: 'Example Country', explicit_province: 'District Capital' };
+assert.equal(resolve({ ...strictFields, explicit_city: 'North Riverside' }, strictRows, true).city, 'Riverside North');
+for (const city of ['Riversid North', 'Hilltown']) {
+  const result = resolve({ ...strictFields, explicit_city: city }, strictRows, true);
+  assert.equal(result.province, 'Capital District');
+  assert.equal(result.city, '');
+}
+assert.equal(resolve({ ...strictFields, inferred_city: 'Riverside North' }, strictRows, true).city, '');
 const portugueseRows = [
   ['Moçambique', 'Maputo', 'Matola/Liberdade'],
   ['Moçambique', 'Maputo', 'Matola/Mahlampswene，Malhampsene'],
@@ -116,32 +128,48 @@ if (process.argv[2]) {
 // Exercise the real write/cache flows; replace only their API and storage boundaries.
 vm.runInNewContext(source.match(/^const quoteSheet = .*$/m)[0]
   + '\n' + source.slice(source.indexOf('const LLM_SYSTEM_PROMPT ='), source.indexOf('function parseModelJson'))
-  + '\n' + source.slice(source.indexOf('const matchCategoryOption ='), source.indexOf('const PHONE_COUNTRY_CODES ='))
+  + '\n' + source.slice(source.indexOf('const matchCategoryOption ='), source.indexOf('const LLM_SYSTEM_PROMPT ='))
   + '\n' + source.slice(source.indexOf('const regionRowsHash ='), source.indexOf('async function readDropdownOptions'))
   + '\n' + source.slice(source.indexOf('async function analyzeReports'), source.indexOf('async function transferWithSheetsApi'))
-  + '\nglobalThis.flows = { analyzeReports, syncRegionConfig };', context);
+  + '\nglobalThis.flows = { analyzeReports, syncRegionConfig, fillPhoneCountries };', context);
 context.DEFAULT_GEMINI_MODEL = 'local-check';
 const logs = [];
 context.log = message => logs.push(message);
 context.showRegionCacheStatus = () => {};
 context.cacheTime = String;
 const dropdown = { W: [...new Set(rows.map(row => row[0]))], X: [...new Set(rows.map(row => row[1]))], Y: [...new Set(rows.map(row => row[2]))] };
-async function checkWrites(fields, currentPath = [], options = dropdown, fallback = { row: null }, currentAge, hierarchy = rows) {
+async function checkWrites(fields, currentPath = [], options = dropdown, fallback = { row: null }, currentAge, hierarchy = rows, report = Object.values(fields).join('\n')) {
   const current = [];
   current[0] = currentAge;
   [current[4], current[5], current[6]] = currentPath;
   const writes = [];
   let calls = 0;
-  context.readValues = async (_token, _base, range) => ({ values: range.includes('!AL') ? [['Local test report']] : [current] });
+  context.readValues = async (_token, _base, range) => ({ values: range.includes('!AL') ? [[report]] : [current] });
   context.readDropdownColumnOptions = async () => [];
   context.repairMissingRegionDropdowns = async (_token, _base, _sheet, _start, _end, _rows, _tab, value) => value;
   context.callLlmWithRetry = async () => (++calls === 1 ? fields : fallback);
   context.sheetsRequest = async (_token, _url, request) => { writes.push(...JSON.parse(request.body).data); };
   await context.flows.analyzeReports('local', 'local', 'Target', hierarchy, 'local', 3, 1, null, 'Regions', options);
   return { writes: Object.fromEntries(writes.filter(item => /![WXY]3$/.test(item.range)).map(item => [item.range.split('!')[1], item.values[0][0]])), calls,
+    card: writes.find(item => item.range.endsWith('!AA3'))?.values[0][0],
     age: writes.find(item => item.range.endsWith('!S3'))?.values[0][0] };
 }
 async function checkFlows() {
+  const phoneWrites = [];
+  context.readValues = async (_token, _base, range) => {
+    if (range === "'Target'!Q3:Q7") return { values: [['+254 000'], ['00265 000'], ['+234 000'], ['254000'], ['+243 000']] };
+    assert.equal(range, "'Target'!V3:V7");
+    return { values: [[], [], ['Existing value']] };
+  };
+  context.readDropdownOptions = async () => ({ V: ['KENYA', 'Malawi', 'Nigeria', 'Congo'] });
+  context.sheetsRequest = async (_token, _url, request) => phoneWrites.push(...JSON.parse(request.body).data);
+  assert.equal((await context.flows.fillPhoneCountries('local', '/test', 'Target', 3, 5, true)).count, 2);
+  assert.deepEqual(phoneWrites.map(item => [item.range, item.values[0][0]]), [["'Target'!V3", 'KENYA'], ["'Target'!V4", 'Malawi']]);
+  assert.equal((await context.flows.fillPhoneCountries('local', '/test', 'Target', 3, 5)).count, 0);
+  const original = await checkWrites({ name: 'sample name', country: 'Gabon', explicit_city: 'Translation' },
+    [], dropdown, undefined, undefined, rows, 'Sample NAME\nGABON\nVille originale');
+  assert.match(original.card, /Nom : Sample NAME\n.*\n✅Pays : GABON/);
+  assert.doesNotMatch(original.card, /Translation/);
   const swahiliDropdown = { W: swahiliCountries, X: swahiliProvinces, Y: [] };
   assert.deepEqual((await checkWrites({ country: 'Tanzania', explicit_city: 'Dar es Salaam' },
     [], swahiliDropdown, undefined, undefined, swahiliRows)).writes, { W3: 'Tanzania', X3: 'Dar es Salaam' });

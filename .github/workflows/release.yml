@@ -126,5 +126,18 @@ jobs:
           else
             gh release create "$release_tag" "$asset" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
           fi
-          gh release verify "$release_tag" --repo "$GITHUB_REPOSITORY"
+          # GitHub can publish the release before its attestation is available.
+          for attempt in {1..7}; do
+            if verification="$(gh release verify "$release_tag" --repo "$GITHUB_REPOSITORY" 2>&1)"; then
+              printf '%s\n' "$verification"
+              break
+            else
+              status=$?
+            fi
+            printf '%s\n' "$verification" >&2
+            if [[ "$verification" != *"no attestations for tag $release_tag ("* || "$attempt" == 7 ]]; then
+              exit "$status"
+            fi
+            sleep 10
+          done
           gh release verify-asset "$release_tag" "$asset" --repo "$GITHUB_REPOSITORY"
