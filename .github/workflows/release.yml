@@ -67,12 +67,10 @@ jobs:
           gh --version
           gh release verify --help >/dev/null
           gh release verify-asset --help >/dev/null
-          for script in background.js content.js dashboard.js options.js tests/*.test.js; do
+          for script in background.js content.js dashboard.js i18n.js options.js tests/*.test.js; do
             node --check "$script"
           done
-          node tests/address-matching.test.js
-          node tests/security.test.js
-          node tests/target-diagnostics.test.js
+          node --test tests/*.test.js
 
   release:
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
@@ -109,7 +107,9 @@ jobs:
           RELEASE_TAG_INPUT: ${{ inputs.tag }}
         run: |
           release_tag="${RELEASE_TAG_INPUT:-$GITHUB_REF_NAME}"
-          git archive --format=zip --output="Form-filling-tool-${release_tag}.zip" HEAD
+          git archive --format=zip --output="Form-filling-tool-${release_tag}.zip" HEAD -- \
+            manifest.json background.js content.js dashboard.html dashboard.css dashboard.js \
+            i18n.js options.html options.js _locales assets
 
       - name: Publish and verify immutable release
         env:
