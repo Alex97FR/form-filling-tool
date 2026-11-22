@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "Transfert de feuilles"
+  },
+  "extensionDescription": {
+    "message": "Transférez les données sélectionnées dans Google Sheets vers un onglet de destination sans mise en forme."
+  },
+  "openConsole": {
+    "message": "Ouvrir la console d’automatisation des feuilles"
+  }
+}

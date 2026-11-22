@@ -2,8 +2,13 @@ const $ = selector => document.querySelector(selector);
 const extensionApi = globalThis.chrome || globalThis.browser;
 const extensionStorage = extensionApi?.storage;
 if (!extensionStorage?.local || !extensionStorage?.sync) {
+  interfaceLocale.setLanguage(navigator.language.split('-')[0]);
+  document.documentElement.lang = navigator.language;
   document.body.innerHTML = '<main style="max-width:620px;margin:80px auto;font:16px Arial;line-height:1.7"><h2>请从扩展图标打开控制台</h2><p>不要直接双击 dashboard.html。请先到 chrome://extensions 重新加载“表格转交”，再点击浏览器右上角的扩展图标打开。</p></main>';
-  throw new Error('扩展 API 不可用：请从扩展图标打开 dashboard.html。');
+  for (const node of document.querySelectorAll('main h2, main p, title')) {
+    node.textContent = interfaceLocale.t(node.textContent);
+  }
+  throw new Error(interfaceLocale.t('扩展 API 不可用：请从扩展图标打开 dashboard.html。'));
 }
 // 参数必须按设备隔离；storage.sync 会随浏览器账号同步到其他电脑。
 const defaultADateOptions = ['10 a.m.', '1 p.m.', '6 p.m.', '8 p.m.', '8:30 p.m.', '9:30 p.m.'].join('\n');
@@ -22,6 +27,7 @@ const getDeviceConfig = async () => {
   await ensureDeviceConfigMigrated();
   return extensionStorage.local.get(deviceConfigDefaults);
 };
+const { t, setup } = interfaceLocale;
 const stepPhases = [
   { title: '准备与转交', steps: ['读取选区', 'Google 授权', '定位目标行', '写入 C:BM'] },
   { title: '字段整理', steps: ['清空 G 列', '更新 E 列', '写入 C 日期', '写入 A 列时间'] },
@@ -42,9 +48,9 @@ function renderSteps() {
     const steps = phase.steps.map(name => {
       const current = stepIndex++;
       const status = `${current < state.done ? 'done ' : ''}${current === state.active ? 'active' : ''}`;
-      return `<div class="phase-step ${status}" data-index="${current + 1}">${name}</div>`;
+      return `<div class="phase-step ${status}" data-index="${current + 1}">${t(name)}</div>`;
     }).join('');
-    return `<div class="phase"><div class="phase-label">${phase.title}</div><div class="phase-steps">${steps}</div></div>`;
+    return `<div class="phase"><div class="phase-label">${t(phase.title)}</div><div class="phase-steps">${steps}</div></div>`;
   }).join('');
   $('#progressText').textContent = `${state.done} / ${STEP_COUNT}`;
 }
@@ -53,7 +59,10 @@ function log(message, type = '') {
   // Rendered with DOM APIs, not innerHTML: log arguments often carry raw cell
   // contents and API responses, which must never execute as HTML.
   const time = document.createElement('time'); time.textContent = new Date().toLocaleTimeString();
-  row.append(time, String(message ?? ''));
+  const text = document.createElement('span');
+  text.dataset.localizedOutput = '';
+  interfaceLocale.render(text, () => t(String(message ?? '')));
+  row.append(time, text);
   $('#logs').append(row); $('#logs').scrollTop = $('#logs').scrollHeight;
 }
 function setStep(active, done = state.done) { state = { active, done }; renderSteps(); }
@@ -67,12 +76,12 @@ const formatDuration = milliseconds => {
 const openAppDialog = ({ message, confirm = false, danger = false, confirmLabel = '确定', cancelLabel = '取消' }) => new Promise(resolve => {
   const overlay = document.createElement('div'); overlay.className = 'app-dialog-backdrop';
   const card = document.createElement('div'); card.className = 'app-dialog'; card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true');
-  const title = document.createElement('h3'); title.className = 'app-dialog-title'; title.textContent = '扩展程序表格转交提示：';
-  const body = document.createElement('p'); body.className = 'app-dialog-message'; body.textContent = message;
+  const title = document.createElement('h3'); title.className = 'app-dialog-title'; title.textContent = t('扩展程序表格转交提示：');
+  const body = document.createElement('p'); body.className = 'app-dialog-message'; body.textContent = t(message);
   const actions = document.createElement('div'); actions.className = 'app-dialog-actions';
   const close = value => { overlay.remove(); document.removeEventListener('keydown', onKeyDown); resolve(value); };
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'app-dialog-cancel'; cancel.textContent = cancelLabel; cancel.onclick = () => close(false);
-  const ok = document.createElement('button'); ok.type = 'button'; ok.className = danger ? 'app-dialog-primary danger' : 'app-dialog-primary'; ok.textContent = confirm ? confirmLabel : '知道了'; ok.onclick = () => close(true);
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'app-dialog-cancel'; cancel.textContent = t(cancelLabel); cancel.onclick = () => close(false);
+  const ok = document.createElement('button'); ok.type = 'button'; ok.className = danger ? 'app-dialog-primary danger' : 'app-dialog-primary'; ok.textContent = t(confirm ? confirmLabel : '知道了'); ok.onclick = () => close(true);
   const onKeyDown = event => { if (event.key === 'Escape' && confirm) close(false); if (event.key === 'Enter') close(true); };
   if (confirm) actions.append(cancel, ok); else actions.append(ok);
   card.append(title, body, actions); overlay.append(card); document.body.append(overlay);
@@ -170,26 +179,26 @@ function showTransferPreview(text, transferGroup = 'group1') {
     card.style.cssText = 'width:min(680px,94vw);max-height:84vh;overflow:auto;background:#fff;border-radius:12px;padding:20px 22px;font:14px/1.6 Arial;color:#202124;box-shadow:0 10px 34px rgba(0,0,0,.35);';
     const title = document.createElement('div');
     title.style.cssText = 'font-size:17px;font-weight:bold;margin-bottom:4px;';
-    title.textContent = '写入前确认选区';
+    title.textContent = t('写入前确认选区');
     const note = document.createElement('div');
     note.style.cssText = 'color:#5f6368;margin-bottom:12px;';
-    note.textContent = transferGroup === 'group2'
+    note.textContent = t(transferGroup === 'group2'
       ? '组别2会按内置列映射写入目标 C:BM；L 列和 M 列会合并写入目标 M 列。请确认预览中的字段对应正确。'
-      : '请核对下面前几列的值与源表一致——若整体错了一列，通常是起始列判断反了，用下面的开关纠正。数据将写入目标表的 C:BM。';
+      : '请核对下面前几列的值与源表一致——若整体错了一列，通常是起始列判断反了，用下面的开关纠正。数据将写入目标表的 C:BM。');
     const toggleBox = document.createElement('div');
     toggleBox.style.cssText = 'display:flex;gap:16px;align-items:center;margin-bottom:8px;';
-    const makeRadio = (label, checked) => {
+    const makeRadio = (label, checked, startsInA) => {
       const wrap = document.createElement('label');
       wrap.style.cssText = 'display:flex;gap:6px;align-items:center;cursor:pointer;';
       const input = document.createElement('input');
       input.type = 'radio'; input.name = 'transfer-start-column'; input.checked = checked;
-      input.onchange = () => { if (input.checked) { fromColumnA = label.startsWith('从 A'); render(); } };
-      wrap.append(input, Object.assign(document.createElement('span'), { textContent: label }));
+      input.onchange = () => { if (input.checked) { fromColumnA = startsInA; render(); } };
+      wrap.append(input, Object.assign(document.createElement('span'), { textContent: t(label) }));
       return wrap;
     };
     toggleBox.append(
-      makeRadio('从 B 列开始（推荐：右键整行复制通常如此）', !autoDetected),
-      makeRadio('从 A 列开始', autoDetected)
+      makeRadio('从 B 列开始（推荐：右键整行复制通常如此）', !autoDetected, false),
+      makeRadio('从 A 列开始', autoDetected, true)
     );
     const summary = document.createElement('div');
     summary.style.cssText = 'color:#188038;margin-bottom:8px;';
@@ -200,7 +209,7 @@ function showTransferPreview(text, transferGroup = 'group1') {
       let rows;
       try { rows = parseTransferValues(text, transferGroup, fromColumnA); }
       catch (error) {
-        summary.textContent = error.message || String(error);
+        summary.textContent = t(error.message || String(error));
         tableHolder.innerHTML = '';
         confirmButton.disabled = true; confirmButton.style.opacity = '.5';
         return;
@@ -208,27 +217,27 @@ function showTransferPreview(text, transferGroup = 'group1') {
       const nonEmptyRows = rows.filter(row => row.some(value => value.trim() !== ''));
       const sample = nonEmptyRows.slice(0, 3);
       const previewIndexes = transferGroup === 'group2' ? group2ColumnMap.slice(0, 8).map(entry => entry.targetIndex) : Array.from({ length: 8 }, (_, index) => index);
-      summary.textContent = transferGroup === 'group2'
+      summary.textContent = t(transferGroup === 'group2'
         ? `按组别2固定列映射解析到 ${nonEmptyRows.length} 个非空行 × ${COLUMN_COUNT} 个目标列。`
-        : `解析到 ${nonEmptyRows.length} 个非空行 × ${COLUMN_COUNT} 列；当前按“源 ${fromColumnA ? 'A' : 'B'} 列 → 目标 C 列”对齐。`;
+        : `解析到 ${nonEmptyRows.length} 个非空行 × ${COLUMN_COUNT} 列；当前按“源 ${fromColumnA ? 'A' : 'B'} 列 → 目标 C 列”对齐。`);
       const head = previewIndexes.map((targetIndex, index) =>
-        `<th style="position:sticky;top:0;background:#f1f3f4;padding:6px 10px;border-bottom:1px solid #dadce0;text-align:left;white-space:nowrap;">目标 ${sheetColumnName(targetIndex + 3)}<br><span style="color:#5f6368;font-weight:normal">${transferGroup === 'group2' ? `源 ${sheetColumnName(group2ColumnMap[index].sourceIndex + (fromColumnA ? 1 : 2))}` : `源 ${sheetColumnName((fromColumnA ? 2 : 1) + index)}`}</span></th>`).join('');
+        `<th style="position:sticky;top:0;background:#f1f3f4;padding:6px 10px;border-bottom:1px solid #dadce0;text-align:left;white-space:nowrap;">${t('目标')} ${sheetColumnName(targetIndex + 3)}<br><span style="color:#5f6368;font-weight:normal">${transferGroup === 'group2' ? `${t('源')} ${sheetColumnName(group2ColumnMap[index].sourceIndex + (fromColumnA ? 1 : 2))}` : `${t('源')} ${sheetColumnName((fromColumnA ? 2 : 1) + index)}`}</span></th>`).join('');
       const body = sample.map(row => `<tr>${Array.from({ length: 8 }, (_, index) => {
         const value = String(row[previewIndexes[index]] ?? '');
         const shown = escapeHtml(value.length > 26 ? `${value.slice(0, 25)}…` : value);
-        return `<td style="padding:6px 10px;border-bottom:1px solid #f1f3f4;white-space:nowrap;">${shown || '<span style="color:#bbb">(空)</span>'}</td>`;
+        return `<td style="padding:6px 10px;border-bottom:1px solid #f1f3f4;white-space:nowrap;">${shown || `<span style="color:#bbb">${t("(空)")}</span>`}</td>`;
       }).join('')}</tr>`).join('');
-      tableHolder.innerHTML = `<table style="border-collapse:collapse;font-size:13px;">${sample.length ? `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>` : ''}</table>${sample.length ? '' : '<div style="padding:14px;color:#c5221f;">没有解析到非空内容，请回 A 表重新复制后再试。</div>'}`;
+      tableHolder.innerHTML = `<table style="border-collapse:collapse;font-size:13px;">${sample.length ? `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>` : ''}</table>${sample.length ? '' : `<div style="padding:14px;color:#c5221f;">${t("没有解析到非空内容，请回 A 表重新复制后再试。")}</div>`}`;
       confirmButton.disabled = !sample.length;
       confirmButton.style.opacity = sample.length ? '1' : '.5';
     };
     const buttonRow = document.createElement('div');
     buttonRow.style.cssText = 'display:flex;justify-content:flex-end;gap:10px;';
     const cancelButton = document.createElement('button');
-    cancelButton.textContent = '取消';
+    cancelButton.textContent = t('取消');
     cancelButton.style.cssText = 'padding:8px 18px;cursor:pointer;border-radius:6px;border:1px solid #dadce0;background:#fff;color:#202124;';
     cancelButton.onclick = () => { overlay.remove(); resolve(null); };
-    confirmButton.textContent = '确认无误，开始转交';
+    confirmButton.textContent = t('确认无误，开始转交');
     confirmButton.style.cssText = 'padding:8px 18px;cursor:pointer;border-radius:6px;border:none;background:#188038;color:#fff;';
     confirmButton.onclick = () => { overlay.remove(); resolve(fromColumnA); };
     buttonRow.append(cancelButton, confirmButton);
@@ -1223,7 +1232,7 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
       })) };
     }).filter(data => data.values.some(row => row.some(value => value !== null)));
     if (conflicts.length) {
-      const cells = conflicts.slice(0, 8).join('、');
+      const cells = conflicts.slice(0, 8).join(', ');
       if (!await openAppConfirm(`续传发现 ${conflicts.length} 个冲突单元格（${cells}）。请先核对目标区域 ${range}。继续会覆盖冲突内容，是否继续？`, true, { confirmLabel: '确认覆盖并继续' })) {
         throw new Error('已取消续传。续传记录已保留。');
       }
@@ -1369,7 +1378,7 @@ extensionStorage.local.get({ geminiApiKey: '', llmModel: 'gemini-3.5-flash-lite'
 extensionStorage.local.get('formTransferSource').then(({ formTransferSource }) => {
   if (formTransferSource?.text) { $('#heroText').textContent = '已从 Google 表格接收选区数据，可以开始转交。'; log('已接收选区数据，共 ' + formTransferSource.text.split('\n').length + ' 行。'); }
 });
-renderSteps(); log('控制台已就绪，等待操作。');
+void setup(renderSteps); renderSteps(); log('控制台已就绪，等待操作。');
 
 $('#authorize').onclick = async () => {
   const button = $('#authorize');
@@ -1505,8 +1514,12 @@ $('#diagnoseTarget').onclick = async () => {
   button.disabled = true; button.textContent = '诊断中…';
   $('#start').disabled = true; $('#copyTargetDiagnosis').disabled = true;
   output.hidden = false; output.textContent = '';
+  const entries = [];
   const report = message => {
-    output.textContent += `${new Date().toLocaleTimeString()} ${message}\n`;
+    entries.push([new Date().toLocaleTimeString(), message]);
+    const format = () => entries.map(([time, text]) => `${time} ${globalThis.interfaceLocale?.t(text) ?? text}\n`).join('');
+    if (globalThis.interfaceLocale) interfaceLocale.render(output, format);
+    else output.textContent = format();
     output.scrollTop = output.scrollHeight;
   };
   report('正在请求 Google 授权；仅诊断参数配置中当前填写的目标表。');
@@ -1531,7 +1544,7 @@ $('#start').onclick = async () => {
   if (!formTransferSource?.text?.trim()) {
     const message = '未检测到本次选区数据。请先回到 A 表选择整行，按 Ctrl+C 复制，再右键点击“转交表格”。';
     log(message, 'error');
-    $('#heroText').textContent = '操作已阻止：请先复制 A 表选中的整行。';
+    $('#heroText').textContent = t('操作已阻止：请先复制 A 表选中的整行。');
     await openAppNotice(message);
     return;
   }
@@ -1545,7 +1558,7 @@ $('#start').onclick = async () => {
   const previewNonEmpty = previewValues.reduce((total, row) => total + row.filter(value => value !== '').length, 0);
   if (previewValues.length < 2 && previewNonEmpty < 2) {
     const message = '只读取到 1 个单元格，疑似没有复制当前整行。请回到 A 表选择整行并按 Ctrl+C。';
-    log(message, 'error'); $('#heroText').textContent = '操作已阻止：没有检测到完整选区。'; await openAppNotice(message); return;
+    log(message, 'error'); $('#heroText').textContent = t('操作已阻止：没有检测到完整选区。'); await openAppNotice(message); return;
   }
   const targetUrl = $('#targetUrl').value.trim();
   const targetTab = $('#targetTab').value.trim() || 'Sheet1';
@@ -1571,20 +1584,20 @@ $('#start').onclick = async () => {
     log('已自动识别：整行复制、从 A 列开始对齐到目标 C 列（跳过写入前确认）。');
   } else {
     startColumnChoice = await showTransferPreview(formTransferSource.text, transferGroup);
-    if (startColumnChoice === null) { log('已取消本次转交，未写入任何数据。'); $('#heroText').textContent = '已取消，等待下一次转交。'; return; }
+    if (startColumnChoice === null) { log('已取消本次转交，未写入任何数据。'); $('#heroText').textContent = t('已取消，等待下一次转交。'); return; }
   }
   const runStartedAt = performance.now();
   const startButton = $('#start');
   if (startButton.disabled) return;
-  startButton.disabled = true; startButton.textContent = '执行中…';
+  startButton.disabled = true; startButton.textContent = t('执行中…');
   $('#diagnoseTarget').disabled = true;
   setStep(0, 0); log('开始执行转交流程。');
   const text = formTransferSource.text;
-  setStep(1, 1); $('#connectionText').textContent = '正在请求 Google 授权'; log('请求 Google Sheets 编辑权限。');
+  setStep(1, 1); $('#connectionText').textContent = t('正在请求 Google 授权'); log('请求 Google Sheets 编辑权限。');
   try {
     const { result, phoneFilled, analysis } = await withFreshToken(async token => {
       await extensionStorage.local.set({ googleApiConnectedAt: Date.now() });
-      $('#connectionDot').parentElement.classList.add('ok'); $('#connectionText').textContent = 'Google API 已授权'; log('Google 授权成功。', 'success');
+      $('#connectionDot').parentElement.classList.add('ok'); $('#connectionText').textContent = t('Google API 已授权'); log('Google 授权成功。', 'success');
       setStep(2, 2); log('正在定位目标行：读取目标表设置，核验续传记录或查找最上面数据行。');
       const { geminiApiKey, llmModel: savedLlmModel = DEFAULT_GEMINI_MODEL } = await extensionStorage.local.get({ geminiApiKey: '', llmModel: DEFAULT_GEMINI_MODEL });
       const llmModel = normalizeGeminiModel(savedLlmModel);
@@ -1602,7 +1615,7 @@ $('#start').onclick = async () => {
       log(`Q 列区号处理完成，补全 V 列 ${phoneFilled} 个空单元格。`, 'success');
       setStep(10, 10); log(`正在逐行调用 Gemini（${llmModel}） 拆解 AL${result.startRow}:AL${result.startRow + result.rowCount - 1}。`);
       const analysis = await analyzeReports(token, apiBase, targetTab, regionRows, geminiApiKey, result.startRow, result.rowCount, null, regionTab, phoneResult.dropdown, llmModel, privateRegion, transferGroup === 'group3');
-      setStep(11, 11); log(`报告拆解完成：分析 ${analysis.analyzed} 行，回写 ${analysis.updated} 个字段${analysis.failedRows.length ? `；失败 ${analysis.failedRows.length} 行（第 ${analysis.failedRows.join('、')} 行），其余步骤继续` : ''}。`, analysis.failedRows.length ? 'error' : 'success');
+      setStep(11, 11); log(`报告拆解完成：分析 ${analysis.analyzed} 行，回写 ${analysis.updated} 个字段${analysis.failedRows.length ? `；失败 ${analysis.failedRows.length} 行（第 ${analysis.failedRows.join(', ')} 行），其余步骤继续` : ''}。`, analysis.failedRows.length ? 'error' : 'success');
       // 失败行入队：流程控制页的“重跑上次失败行”按钮只处理这些行，不整批重跑。
       await extensionStorage.local.set({ llmRetryQueue: analysis.failedRows.length ? { rows: analysis.failedRows, privateRegion, spreadsheetId, targetTab, transferGroup, regionTab, savedAt: Date.now() } : null });
       updateRetryFailedButton(analysis.failedRows);
@@ -1610,20 +1623,20 @@ $('#start').onclick = async () => {
     });
     setStep(-1, STEP_COUNT);
     log(`本次执行完成，用时 ${formatDuration(performance.now() - runStartedAt)}。`, 'success');
-    log('已完成：转交、信息完善、Q 区号补全、AL 报告拆解。', 'success'); $('#heroText').textContent = '转交流程已完成。';
+    log('已完成：转交、信息完善、Q 区号补全、AL 报告拆解。', 'success'); $('#heroText').textContent = t('转交流程已完成。');
     // ── 识别质量小结：让每轮的准确率可量化，未命中处直接给出行号和原始值 ──
     const addr = analysis.address;
     log(`── 识别质量小结 ──`, 'success');
-    log(`转交 ${result.rowCount} 行 · V 列补全 ${phoneFilled} 格 · AL 拆解成功 ${analysis.analyzed}/${analysis.totalReports}` + (analysis.failedRows.length ? `（失败：第 ${analysis.failedRows.join('、')} 行）` : ''), analysis.failedRows.length ? 'error' : 'success');
-    log(`地址识别 ${addr.total} 行：国家 ${addr.countryOk}/${addr.total} · 省 ${addr.provinceOk}/${addr.total}（其中地理推断 ${addr.geoInferred}·近邻推断 ${addr.nearInferred}）· 市/区 ${addr.cityOk}/${addr.total}` + (addr.countryFails.length ? `；国家未命中: ${addr.countryFails.slice(0, 6).map(f => `第${f.row}行`).join(', ')}` : '') + (addr.cityFails.length ? `；市/区未命中: ${addr.cityFails.slice(0, 6).map(f => `第${f.row}行`).join(', ')}` : ''), addr.countryOk === addr.total && addr.provinceOk === addr.total && addr.cityOk === addr.total ? 'success' : 'error');
-    if (addr.dropdownMisses.length) log(`已解析但目标表下拉缺少对应选项（未写入）：${addr.dropdownMisses.slice(0, 8).map(m => `第${m.row}行${m.column}`).join(', ')}`, 'error');
+    log(`转交 ${result.rowCount} 行 · V 列补全 ${phoneFilled} 格 · AL 拆解成功 ${analysis.analyzed}/${analysis.totalReports}` + (analysis.failedRows.length ? `（失败：第 ${analysis.failedRows.join(', ')} 行）` : ''), analysis.failedRows.length ? 'error' : 'success');
+    log(`地址识别 ${addr.total} 行：国家 ${addr.countryOk}/${addr.total} · 省 ${addr.provinceOk}/${addr.total}（其中地理推断 ${addr.geoInferred}·近邻推断 ${addr.nearInferred}）· 市/区 ${addr.cityOk}/${addr.total}` + (addr.countryFails.length ? `；国家未命中: ${addr.countryFails.slice(0, 6).map(f => f.row).join(', ')}` : '') + (addr.cityFails.length ? `；市/区未命中: ${addr.cityFails.slice(0, 6).map(f => f.row).join(', ')}` : ''), addr.countryOk === addr.total && addr.provinceOk === addr.total && addr.cityOk === addr.total ? 'success' : 'error');
+    if (addr.dropdownMisses.length) log(`已解析但目标表下拉缺少对应选项（未写入）：${addr.dropdownMisses.slice(0, 8).map(m => `${m.column}${m.row}`).join(', ')}`, 'error');
     await extensionStorage.local.remove(['formTransferSource', 'formTransferCommitted']);
   } catch (error) {
     log(error.message || '转交失败。', 'error');
     log(`本次执行中断，已用时 ${formatDuration(performance.now() - runStartedAt)}。`, 'error');
-    $('#heroText').textContent = '流程未完成，请查看执行日志。';
+    $('#heroText').textContent = t('流程未完成，请查看执行日志。');
   } finally {
-    startButton.disabled = false; startButton.textContent = '开始转交';
+    startButton.disabled = false; startButton.textContent = t('开始转交');
     $('#diagnoseTarget').disabled = false;
   }
 };
@@ -1657,7 +1670,7 @@ $('#retryFailedRows').onclick = async () => {
   const button = $('#retryFailedRows');
   const { llmRetryQueue: queue } = await extensionStorage.local.get({ llmRetryQueue: null });
   if (queue?.rows?.length && (!queue.spreadsheetId || !queue.targetTab)) {
-    await openAppNotice(`旧版失败记录缺少目标表信息。请人工核对并处理这些行：${queue.rows.join('、')}。记录已保留。`);
+    await openAppNotice(`旧版失败记录缺少目标表信息。请人工核对并处理这些行：${queue.rows.join(', ')}。记录已保留。`);
     return;
   }
   const { formTransferCommitted } = await extensionStorage.local.get({ formTransferCommitted: null });
@@ -1692,9 +1705,9 @@ $('#retryFailedRows').onclick = async () => {
     if (!geminiApiKey) throw new Error(`尚未配置 Gemini API Key。`);
     const spanStart = rows[0];
     const spanEnd = rows[rows.length - 1];
-    log(`开始重跑 ${rows.length} 个失败行：第 ${rows.join('、')} 行，逐行调用 Gemini…`);
+    log(`开始重跑 ${rows.length} 个失败行：第 ${rows.join(', ')} 行，逐行调用 Gemini…`);
     const analysis = await analyzeReports(token, base, targetTab, regionRows, geminiApiKey, spanStart, spanEnd - spanStart + 1, new Set(rows), regionTab, null, llmModel, privateRegion, transferGroup === 'group3');
-    log(`重跑完成：成功 ${analysis.analyzed} 行，回写 ${analysis.updated} 个字段${analysis.failedRows.length ? `；仍失败 ${analysis.failedRows.length} 行（第 ${analysis.failedRows.join('、')} 行）` : ''}。`, analysis.failedRows.length ? 'error' : 'success');
+    log(`重跑完成：成功 ${analysis.analyzed} 行，回写 ${analysis.updated} 个字段${analysis.failedRows.length ? `；仍失败 ${analysis.failedRows.length} 行（第 ${analysis.failedRows.join(', ')} 行）` : ''}。`, analysis.failedRows.length ? 'error' : 'success');
     if (analysis.failedRows.length) {
       await extensionStorage.local.set({ llmRetryQueue: { ...queue, rows: analysis.failedRows, savedAt: Date.now() } });
       updateRetryFailedButton(analysis.failedRows);

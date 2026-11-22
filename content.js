@@ -1,4 +1,8 @@
 (() => {
+  const { t, setLanguage } = interfaceLocale;
+  const refreshLanguage = () => chrome.runtime.sendMessage({ type: 'INTERFACE_LANGUAGE_GET' })
+    .then(response => setLanguage(response?.interfaceLanguage), () => {});
+  const languageReady = refreshLanguage();
   const MENU_LABEL = '转交表格';
   const marker = 'data-form-transfer-item';
   const requestBackground = async message => {
@@ -10,7 +14,7 @@
 
   const notify = (message, error = false) => {
     const node = document.createElement('div');
-    node.textContent = message;
+    node.textContent = t(message);
     Object.assign(node.style, {
       position: 'fixed', zIndex: 2147483647, top: '20px', left: '50%',
       transform: 'translateX(-50%)', padding: '12px 18px', borderRadius: '6px',
@@ -101,11 +105,16 @@
     await new Promise(resolve => setTimeout(resolve, 1800));
     await navigator.clipboard.writeText(pending.text);
     const panel = document.createElement('div');
-    panel.innerHTML = '<b>转交数据已准备好</b><br><span>请在目标表点击首个空行，然后按 Ctrl+V 粘贴。</span>';
+    await refreshLanguage();
+    const heading = document.createElement('b');
+    heading.textContent = t('转交数据已准备好');
+    const instruction = document.createElement('span');
+    instruction.textContent = t('请在目标表点击首个空行，然后按 Ctrl+V 粘贴。');
+    panel.append(heading, document.createElement('br'), instruction);
     const copy = document.createElement('button');
-    copy.textContent = '重新复制数据';
+    copy.textContent = t('重新复制数据');
     const done = document.createElement('button');
-    done.textContent = '完成';
+    done.textContent = t('完成');
     [copy, done].forEach(button => Object.assign(button.style, {
       margin: '10px 8px 0 0', padding: '6px 10px', cursor: 'pointer'
     }));
@@ -129,7 +138,7 @@
     document.body.append(panel);
   };
 
-  requestBackground({ type: 'TRANSFER_PENDING_GET' }).then(({ pending }) => {
+  languageReady.then(() => requestBackground({ type: 'TRANSFER_PENDING_GET' })).then(({ pending }) => {
     const formTransferPending = pending;
     if (formTransferPending) finishPendingTransfer(formTransferPending).catch(error => {
       notify(error.message || '目标表粘贴失败，请手动选择首个空行后按 Ctrl+V。', true);
@@ -146,7 +155,7 @@
       const item = document.createElement('div');
       item.setAttribute('role', 'menuitem');
       item.setAttribute(marker, 'true');
-      item.textContent = MENU_LABEL;
+      item.textContent = globalThis.interfaceLocale?.t(MENU_LABEL) ?? MENU_LABEL;
       Object.assign(item.style, {
         cursor: 'pointer', padding: '8px 16px', color: '#202124',
         font: '14px Arial', borderBottom: '1px solid #dadce0'
@@ -175,7 +184,12 @@
     if (!lastContextMenuPoint) return;
     const menus = [...document.querySelectorAll('[role="menu"]')].filter(isContextMenu);
     const menu = menus[menus.length - 1];
-    if (menu) addMenuItem(menu);
+    if (menu) {
+      addMenuItem(menu);
+      const item = menu.querySelector(`[${marker}]`);
+      const label = t(MENU_LABEL);
+      if (item && item.textContent !== label) item.textContent = label;
+    }
   };
 
   // Sheets mutates the whole document constantly; rescanning on every
@@ -201,6 +215,7 @@
     lastContextMenuPoint = { x: event.clientX, y: event.clientY };
     clearTimeout(contextMenuPointTimer);
     contextMenuPointTimer = setTimeout(() => { lastContextMenuPoint = null; }, 1500);
+    void refreshLanguage().then(scanMenus);
     scanAfterContextMenu();
   };
   document.addEventListener('contextmenu', rememberContextMenuPoint, true);

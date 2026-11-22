@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "表格转交"
+  },
+  "extensionDescription": {
+    "message": "把 Google 表格当前选中的数据无格式转交到指定表格分表。"
+  },
+  "openConsole": {
+    "message": "打开表格自动化控制台"
+  }
+}

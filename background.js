@@ -100,6 +100,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   try { senderUrl = new URL(sender.url); } catch { return; }
   if (sender.frameId !== 0 || senderUrl.origin !== 'https://docs.google.com' || !spreadsheetId(senderUrl.pathname)) return;
 
+  if (message?.type === 'INTERFACE_LANGUAGE_GET') {
+    chrome.storage.local.get({ interfaceLanguage: 'zh' })
+      .then(({ interfaceLanguage }) => sendResponse({ interfaceLanguage }), () => sendResponse({ interfaceLanguage: 'zh' }));
+    return true;
+  }
+
   if (['TRANSFER_SOURCE_SET', 'TRANSFER_PENDING_GET', 'TRANSFER_PENDING_REMOVE'].includes(message?.type)) {
     void (async () => {
       if (!await storageBoundaryReady) throw new Error('Storage access boundary unavailable');
@@ -126,3 +132,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   void openDashboard(message.query);
   sendResponse({ ok: true });
 });
+
+const browserLocales = { zh: 'zh_CN', en: 'en', pt: 'pt_BR', sw: 'sw', fr: 'fr' };
+let toolbarUpdate = 0;
+async function updateToolbarLanguage() {
+  const update = ++toolbarUpdate;
+  const { interfaceLanguage } = await chrome.storage.local.get('interfaceLanguage');
+  let title = chrome.i18n.getMessage('openConsole');
+  if (Object.hasOwn(browserLocales, interfaceLanguage)) {
+    const locale = browserLocales[interfaceLanguage];
+    const response = await fetch(chrome.runtime.getURL(`_locales/${locale}/messages.json`));
+    title = (await response.json()).openConsole.message;
+  }
+  if (update === toolbarUpdate) await chrome.action.setTitle({ title });
+}
+if (chrome.action.setTitle) {
+  const refreshToolbar = () => { void updateToolbarLanguage().catch(console.error); };
+  chrome.runtime.onInstalled.addListener(refreshToolbar);
+  chrome.runtime.onStartup.addListener(refreshToolbar);
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.interfaceLanguage) refreshToolbar();
+  });
+}

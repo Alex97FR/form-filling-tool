@@ -35,3 +35,4 @@ label{display:block;margin:18px 0;color:#415572;font-weight:700}input,select,tex
 .secret-field textarea{display:block;resize:none}
 .secret-field .secret-toggle{top:50%;transform:translateY(-50%)}
 @media(max-width:480px){.region-config{grid-template-columns:minmax(0,1fr)}.region-config button{justify-self:start}}
+.connection #interfaceLanguage{width:auto;margin:0;padding:10px 12px;flex-shrink:0}

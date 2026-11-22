@@ -9,8 +9,8 @@
 </head>
 <body>
   <header class="topbar">
-    <div><div class="eyebrow">FORM AUTOMATION</div><h1>表格自动化控制台</h1></div>
-    <div class="connection"><i id="connectionDot"></i><span id="connectionText">尚未验证 Google API</span><button id="authorize" class="secondary">授权 Google</button></div>
+    <div><div class="eyebrow">表格自动化</div><h1>表格自动化控制台</h1></div>
+    <div class="connection"><i id="connectionDot"></i><span id="connectionText">尚未验证 Google API</span><button id="authorize" class="secondary">授权 Google</button><select id="interfaceLanguage" aria-label="界面语言"><option value="zh">中文</option></select></div>
   </header>
   <main class="layout">
     <section class="main-col">
@@ -18,7 +18,7 @@
       <nav class="view-tabs" aria-label="控制台页面"><button id="workflowTab" class="view-tab active">流程控制</button><button id="configTab" class="view-tab">参数配置</button></nav>
       <div id="workflowView"><div class="card"><div class="section-title"><h3>流程进度</h3><span id="progressText">0 / 12</span></div><div class="phases" id="phases"></div></div>
       <div class="card"><div class="section-title"><h3>执行日志</h3><button id="retryFailedRows" class="link" hidden>重跑上次失败行</button><button id="clearLog" class="link">清空</button></div><div class="logs" id="logs"></div></div>
-      <div class="card"><div class="section-title diagnosis-heading"><h3>目标表诊断</h3><div class="report-tools"><button id="diagnoseTarget" class="secondary" type="button">诊断目标表</button><button id="copyTargetDiagnosis" class="link" type="button" disabled>复制诊断结果</button></div></div><p class="tip">使用参数配置中的目标表，只读检查表格规模、保护设置和读取耗时。每项读取最多等待 30 秒；不写入、不插行，读取成功也不代表具备写入权限。请在转交停止后运行。</p><pre id="targetDiagnosisReport" class="logs diagnosis-report" role="status" aria-live="polite" hidden></pre></div></div>
+      <div class="card"><div class="section-title diagnosis-heading"><h3>目标表诊断</h3><div class="report-tools"><button id="diagnoseTarget" class="secondary" type="button">诊断目标表</button><button id="copyTargetDiagnosis" class="link" type="button" disabled>复制诊断结果</button></div></div><p class="tip">使用参数配置中的目标表，只读检查表格规模、保护设置和读取耗时。每项读取最多等待 30 秒；不写入、不插行，读取成功也不代表具备写入权限。请在转交停止后运行。</p><pre id="targetDiagnosisReport" data-localized-output class="logs diagnosis-report" role="status" aria-live="polite" hidden></pre></div></div>
       <div id="configView" class="config-view" hidden><div class="card"><div class="section-title"><h3>参数配置</h3><span class="badge">本机保存</span></div>
         <fieldset class="config-group target-config"><legend>转交目标</legend>
           <label class="config-wide">目标表格网址<input id="targetUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/.../edit"></label>
@@ -58,6 +58,7 @@
       </div></div>
     </section>
   </main>
+  <script src="i18n.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>

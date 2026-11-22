@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "Spreadsheet Transfer"
+  },
+  "extensionDescription": {
+    "message": "Transfer selected Google Sheets data to a destination tab without formatting."
+  },
+  "openConsole": {
+    "message": "Open the spreadsheet automation console"
+  }
+}

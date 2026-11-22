@@ -15,11 +15,13 @@
 </style>
 <h2>表格转交设置</h2>
 <p class="tip">先在这里填写目标表格。以后在 A 表中选中要转交的行（建议只选 B 到 BL），按 Ctrl+C，再右键点击“转交表格”。目标表格必须是当前 Google 账号有权限编辑的表格。</p>
-<label for="targetUrl">目标表格网址</label>
+<label for="interfaceLanguage">界面语言</label><select id="interfaceLanguage"><option value="zh">中文</option></select>
+        <label for="targetUrl">目标表格网址</label>
 <input id="targetUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/.../edit">
 <label for="targetTab">目标分表名称（可选）</label>
 <input id="targetTab" placeholder="例如：2026年6月">
 <label for="targetHeaderRows">目标表头行数</label>
 <input id="targetHeaderRows" type="number" min="0" max="2147483646" step="1" value="2" placeholder="默认 2">
 <button id="save">保存设置</button><span id="status"></span>
-<script src="options.js"></script>
+<script src="i18n.js"></script>
+  <script src="options.js"></script>

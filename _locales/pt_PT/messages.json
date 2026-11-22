@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "Transferência de Folhas de Cálculo"
+  },
+  "extensionDescription": {
+    "message": "Transfira os dados selecionados no Google Sheets para um separador de destino, sem formatação."
+  },
+  "openConsole": {
+    "message": "Abrir o console de automação de planilhas"
+  }
+}
