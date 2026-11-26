@@ -41,7 +41,12 @@
             <button id="refreshRegionConfig" class="secondary" type="button">刷新地区配置</button>
             <p id="regionCacheStatus" class="status">授权后自动读取，之后每天 12:00 检查</p>
           </div>
-          <label>Gemini / Gemma 模型<select id="llmModel">
+          <label class="config-wide">报告拆解服务<select id="reportProvider">
+            <option value="gemini">Google Gemini</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="openai">OpenAI</option>
+          </select></label>
+          <label data-provider="gemini">Gemini / Gemma 模型<select id="llmModel">
             <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite（推荐：15 RPM / 500 RPD）</option>
             <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite（15 RPM / 500 RPD）</option>
             <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite（备用：10 RPM / 20 RPD）</option>
@@ -49,9 +54,13 @@
             <option value="gemma-4-26b-a4b-it">Gemma 4 26B（推荐高额度：30 RPM / 14.4K RPD）</option>
             <option value="gemma-4-31b-it">Gemma 4 31B（高额度：30 RPM / 14.4K RPD）</option>
           </select></label>
-          <label>Gemini API Key <a class="api-key-help" href="https://aistudio.google.com/api-keys" target="_blank" rel="noopener noreferrer">申请 API Key</a><span class="secret-field"><textarea id="llmKey" rows="1" spellcheck="false" autocomplete="off" placeholder="AQ... 或 AIza..."></textarea><button id="toggleLlmKey" class="secret-toggle" type="button" aria-label="显示 API Key" title="显示 API Key">👁</button></span></label>
-          <p class="tip">Key 和模型选择只保存在本机扩展存储中。</p>
-          <p class="tip">运行报告拆解时，报告正文会发送给 Google Gemini API 处理。请避免发送不必要的敏感信息。</p>
+          <label data-provider="gemini">Gemini API Key <a class="api-key-help" href="https://aistudio.google.com/api-keys" target="_blank" rel="noopener noreferrer">申请 API Key</a><span class="secret-field"><textarea id="geminiApiKey" rows="3" spellcheck="false" autocomplete="off" placeholder="每行一个密钥，按顺序轮询"></textarea><button class="secret-toggle" type="button" aria-label="显示 API Key" title="显示 API Key">👁</button></span></label>
+          <label data-provider="openrouter" hidden>OpenRouter 模型 ID<select id="openRouterModel"></select></label>
+          <label data-provider="openrouter" hidden>OpenRouter API Key <a class="api-key-help" href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">申请 API Key</a><span class="secret-field"><textarea id="openRouterApiKey" rows="1" spellcheck="false" autocomplete="off" placeholder="sk-or-..."></textarea><button class="secret-toggle" type="button" aria-label="显示 API Key" title="显示 API Key">👁</button></span></label>
+          <label data-provider="openai" hidden>OpenAI 模型 ID<input id="openAiModel" placeholder="gpt-4.1-mini" maxlength="256" spellcheck="false"></label>
+          <label data-provider="openai" hidden>OpenAI API Key <a class="api-key-help" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">申请 API Key</a><span class="secret-field"><textarea id="openAiApiKey" rows="1" spellcheck="false" autocomplete="off" placeholder="sk-..."></textarea><button class="secret-toggle" type="button" aria-label="显示 API Key" title="显示 API Key">👁</button></span></label>
+          <p class="tip">各服务的 API Key 分别保存在本机扩展存储中。切换服务后，请点击「保存配置」。</p>
+          <p class="tip">运行报告拆解时，报告正文会发送给已保存的服务处理。请避免发送不必要的敏感信息。</p>
         </fieldset>
         <p id="saveStatus" class="status"></p>
         <div class="config-backup"><button id="save" class="secondary">保存配置</button><button id="exportConfig" class="secondary">导出配置</button><button id="importConfig" class="secondary">导入配置</button><button id="clearConfig" class="danger-button">清除所有配置</button><input id="configFile" type="file" accept="application/json,.json" hidden><p>导出文件不包含 API Key。在其他设备导入后，请重新填写密钥。</p></div>

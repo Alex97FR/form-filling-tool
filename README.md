@@ -48,4 +48,6 @@
 - 支持批量查询、地址匹配和群组链接生成。
 - 查询失败会记录日志，不影响其他数据处理。
 - API Key 和本地配置只保存在本机，不上传到仓库。
-- 导出配置不包含 Gemini API Key。换设备导入后，请重新填写密钥。
+- 在「参数配置 → 智能补全」选择 Gemini、OpenRouter 或 OpenAI，填写对应的 API Key 后点击「保存配置」。OpenRouter 可从五个预设免费模型中选择，默认使用 `nvidia/nemotron-3-ultra-550b-a55b:free`。旧配置中的其他 OpenRouter 模型会使用此默认值。OpenAI 默认使用 `gpt-4.1-mini`，也可以手动填写模型 ID。正常拆解和失败行重跑都使用已保存的服务。
+- 导出配置不包含任何 API Key。换设备导入后，请重新填写密钥。
+- Gemini 支持每行填写一个 API Key。每次运行按填写顺序循环使用密钥，收到 HTTP 429 时会尝试下一把，同一轮中每把密钥最多尝试一次。同一 Google Cloud 项目的密钥共享额度。

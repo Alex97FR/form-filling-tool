@@ -37,15 +37,17 @@ assert.equal(formatContext.extend([rules[3]], 7, 100, 3, true).length, 0); // Un
 const appendedRule = { ranges: [{ sheetId: 7, startRowIndex: 0, endRowIndex: 100 }] };
 assert.equal(formatContext.extend([appendedRule], 7, 100, 3, true)[0].updateConditionalFormatRule.rule.ranges[0].endRowIndex, 103);
 const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
-const context = { URL, URLSearchParams, crypto: require('node:crypto').webcrypto };
+const context = { URL, URLSearchParams, performance, log() {}, formatDuration: String, crypto: require('node:crypto').webcrypto };
 vm.runInNewContext(spreadsheetIdSource + '\n' + slice('function parseGoogleAuthRedirect', 'async function getGoogleToken')
   + '\n' + slice('async function sheetsRequest', 'const readValues =')
-  + '\n' + slice('function parseModelJson', 'async function callLlmWithRetry')
+  + '\n' + slice('const DEFAULT_GEMINI_MODEL =', "$('#reportProvider').onchange")
+  + '\n' + source.match(/^const STRICT_JSON_REMINDER = .*$/m)[0]
+  + '\n' + slice('function parseModelJson', 'const rememberDashboardView')
   + '\n' + source.match(/^const deviceConfigKeys = .*$/m)[0]
   + '\n' + slice('const normalizeTransferGroup =', 'async function copyText')
   + '\n' + slice('const syncConfigKeys =', "$('#exportConfig').onclick")
-  + '\nglobalThis.security = { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, buildConfigExport, parseConfigImport };', context);
-const { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, buildConfigExport, parseConfigImport } = context.security;
+  + '\nglobalThis.security = { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, selectReportProvider, callLlmWithRetry, buildConfigExport, parseConfigImport };', context);
+const { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, selectReportProvider, callLlmWithRetry, buildConfigExport, parseConfigImport } = context.security;
 
 const redirect = 'https://extension-id.chromiumapp.org/';
 const state = 'random-request-state';
@@ -65,10 +67,13 @@ for (const url of [
 ]) assert.throws(() => parseGoogleAuthRedirect(url, redirect, state));
 
 const sync = { targetUrl: 'https://docs.google.com/spreadsheets/d/local/edit', targetTab: 'Target', targetHeaderRows: '7', aDateValue: '11:15 a.m.', aDateOptions: '10 a.m.\n11:15 a.m.', unexpected: 'discard' };
-const local = { groqApiKey: 'fake-groq-key', groqApiKeys: ['fake-groq-key'], geminiApiKey: 'fake-gemini-key', llmProvider: 'groq', regionTab: 'Regions', unexpected: 'discard' };
+const local = { groqApiKey: 'fake-groq-key', groqApiKeys: ['fake-groq-key'], geminiApiKey: 'fake-gemini-key', openRouterApiKey: 'fake-router-key', openAiApiKey: 'fake-openai-key', reportProvider: 'openrouter', openRouterModel: 'google/gemma-4-31b-it:free', llmProvider: 'groq', regionTab: 'Regions', unexpected: 'discard' };
 const exported = buildConfigExport(sync, local);
 assert.equal(Object.hasOwn(exported.local, 'llmProvider'), false);
-for (const key of ['groqApiKey', 'groqApiKeys', 'geminiApiKey', 'unexpected']) assert.equal(Object.hasOwn(exported.local, key), false);
+for (const key of ['groqApiKey', 'groqApiKeys', 'geminiApiKey', 'openRouterApiKey', 'openAiApiKey', 'unexpected']) assert.equal(Object.hasOwn(exported.local, key), false);
+assert.equal(parseConfigImport(exported).reportProvider, 'openrouter');
+assert.equal(parseConfigImport(exported).openRouterModel, local.openRouterModel);
+assert.equal(selectReportProvider({ ...local, openRouterModel: 'openrouter/free' }).model, 'nvidia/nemotron-3-ultra-550b-a55b:free');
 assert.equal(Object.hasOwn(exported.sync, 'unexpected'), false);
 for (const [group, regionKey] of [['group4', 'regionTabGroup4'], ['group5', 'regionTabGroup5']]) {
   const backup = buildConfigExport({ ...sync, transferGroup: group }, { ...local, [regionKey]: 'Team Regions' });
@@ -160,6 +165,53 @@ async function checkRequests() {
   await assert.rejects(() => sheetsRequest('token', 'https://sheets.googleapis.com/local'), error => error.status === 401 && !error.message.includes(canary));
   await assert.rejects(() => callGemini('key', 'gemini-local', 'system', 'report'), error => !error.message.includes(canary));
   assert.equal(bodyReads, 1); // Only Sheets reads the body to identify the known API-disabled condition.
+
+  assert.equal(selectReportProvider({ geminiApiKey: local.geminiApiKey }).name, 'Gemini');
+  const gemini = selectReportProvider({ geminiApiKey: '  first-key \r\n\nsecond-key\nfirst-key ' });
+  const usedKeys = [];
+  context.fetch = async (_url, options) => {
+    usedKeys.push(options.headers['x-goog-api-key']);
+    if (usedKeys.length === 1) return { ok: false, status: 429 };
+    return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"age":35}' }] } }] }) };
+  };
+  assert.equal((await callLlmWithRetry(gemini, 'system', 'report')).age, 35);
+  assert.equal((await callLlmWithRetry(gemini, 'system', 'next report')).age, 35);
+  assert.deepEqual(usedKeys, ['first-key', 'second-key', 'first-key']);
+  context.fetch = async (_url, options) => {
+    usedKeys.push(options.headers['x-goog-api-key']);
+    return { ok: false, status: 429 };
+  };
+  await assert.rejects(() => callLlmWithRetry(gemini, 'system', 'report'), { status: 429 });
+  assert.deepEqual(usedKeys.slice(3), ['second-key', 'first-key']);
+
+  for (const [id, url, key, model] of [
+    ['openrouter', 'https://openrouter.ai/api/v1/chat/completions', local.openRouterApiKey, local.openRouterModel],
+    ['openai', 'https://api.openai.com/v1/chat/completions', local.openAiApiKey, 'gpt-4.1-mini']
+  ]) {
+    const provider = selectReportProvider({ ...local, reportProvider: id });
+    let attempts = 0;
+    context.fetch = async (requestUrl, options) => {
+      assert.equal(requestUrl, url);
+      assert.equal(options.headers.Authorization, 'Bearer ' + key);
+      assert.equal(options.redirect, 'error');
+      const body = JSON.parse(options.body);
+      assert.equal(body.model, model);
+      assert.deepEqual(body.messages[0], { role: 'system', content: 'system' });
+      assert.equal(body.messages[1].role, 'user');
+      if (attempts) assert.match(body.messages[1].content, /^report\n\n.*JSON/);
+      else assert.equal(body.messages[1].content, 'report');
+      const content = ++attempts === 1 ? 'invalid' : '{"age":35}';
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+    };
+    assert.equal((await callLlmWithRetry(provider, 'system', 'report')).age, 35);
+    assert.equal(attempts, 2);
+    context.fetch = async () => {
+      attempts++;
+      return { ok: false, status: 429, json: async () => ({ error: { message: canary } }) };
+    };
+    await assert.rejects(() => callLlmWithRetry(provider, 'system', 'report'), error => /429/.test(error.message) && !error.message.includes(canary));
+    assert.equal(attempts, 3);
+  }
 }
 
 // Exercise the real service worker's sender and command boundary.

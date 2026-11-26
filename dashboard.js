@@ -664,14 +664,59 @@ const GEMINI_MODEL_IDS = new Set([
   'gemma-4-26b-a4b-it', 'gemma-4-31b-it'
 ]);
 const normalizeGeminiModel = model => GEMINI_MODEL_IDS.has(model) ? model : DEFAULT_GEMINI_MODEL;
-$('#toggleLlmKey').onclick = () => {
-  const keyField = $('#llmKey');
-  const visible = keyField.classList.toggle('secret-visible');
-  const button = $('#toggleLlmKey');
-  button.textContent = visible ? '🙈' : '👁';
-  button.setAttribute('aria-label', visible ? '隐藏 API Key' : '显示 API Key');
-  button.title = visible ? '隐藏 API Key' : '显示 API Key';
+const openRouterModels = [
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'google/gemma-4-31b-it:free',
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+  'nvidia/nemotron-3.5-lightning:free'
+];
+const normalizeOpenRouterModel = model => openRouterModels.includes(model) ? model : openRouterModels[0];
+const reportProviders = {
+  gemini: { name: 'Gemini', key: 'geminiApiKey', model: 'llmModel', defaultModel: DEFAULT_GEMINI_MODEL },
+  openrouter: { name: 'OpenRouter', key: 'openRouterApiKey', model: 'openRouterModel', defaultModel: openRouterModels[0], url: 'https://openrouter.ai/api/v1/chat/completions' },
+  openai: { name: 'OpenAI', key: 'openAiApiKey', model: 'openAiModel', defaultModel: 'gpt-4.1-mini', url: 'https://api.openai.com/v1/chat/completions' }
 };
+const normalizeReportProvider = value => Object.hasOwn(reportProviders, value) ? value : 'gemini';
+const reportSettings = {
+  reportProvider: 'gemini',
+  ...Object.fromEntries(Object.values(reportProviders).flatMap(({ key, model, defaultModel }) => [[key, ''], [model, defaultModel]]))
+};
+function selectReportProvider(values) {
+  const id = normalizeReportProvider(values.reportProvider);
+  const provider = reportProviders[id];
+  let model = values[provider.model]?.trim() || provider.defaultModel;
+  if (id === 'gemini') model = normalizeGeminiModel(model);
+  if (id === 'openrouter') model = normalizeOpenRouterModel(model);
+  const apiKey = values[provider.key]?.trim() || '';
+  if (id !== 'gemini') return { ...provider, model, apiKey };
+  const keys = [...new Set(apiKey.split(/\r?\n/).map(key => key.trim()).filter(Boolean))];
+  let nextKey = 0;
+  return {
+    ...provider, model, apiKey: keys[0], keyCount: keys.length,
+    nextApiKey: () => keys[nextKey++ % keys.length]
+  };
+}
+async function getReportProvider() {
+  const provider = selectReportProvider(await extensionStorage.local.get(reportSettings));
+  if (!provider.apiKey) throw new Error(`尚未配置 ${provider.name} API Key，请在设置中填写并保存。`);
+  return provider;
+}
+$('#reportProvider').onchange = () => {
+  for (const field of document.querySelectorAll('[data-provider]')) {
+    field.hidden = field.dataset.provider !== $('#reportProvider').value;
+    if (field.hidden && field.querySelector('.secret-visible')) field.querySelector('.secret-toggle').click();
+  }
+};
+$('#openRouterModel').replaceChildren(...openRouterModels.map(model => new Option(model, model)));
+for (const button of document.querySelectorAll('.smart-config .secret-toggle')) {
+  button.onclick = () => {
+    const visible = button.previousElementSibling.classList.toggle('secret-visible');
+    button.textContent = visible ? '🙈' : '👁';
+    button.title = visible ? '隐藏 API Key' : '显示 API Key';
+    button.setAttribute('aria-label', button.title);
+  };
+}
 $('#llmModel').onchange = () => extensionStorage.local.set({ llmModel: normalizeGeminiModel($('#llmModel').value) });
 
 // Cheap content fingerprint for change detection (not cryptographic).
@@ -952,19 +997,54 @@ async function callGemini(apiKey, model, systemPrompt, userText, strictHint = fa
         : { responseMimeType: 'application/json' }
     })
   });
-  if (!response.ok) throw new Error(`Gemini API 请求失败（HTTP ${response.status}）。`);
+  if (!response.ok) {
+    const error = new Error(`Gemini API 请求失败（HTTP ${response.status}）。`);
+    error.status = response.status;
+    throw error;
+  }
   const data = await response.json();
   const content = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '';
   return parseModelJson(content, 'Gemini');
 }
 
-// 模型偶尔会在 JSON 外夹带说明文字导致解析失败：只有这类"格式失败"才值得
-// 原样附加严格格式要求重试一次；网络/限流/鉴权错误直接抛给上层处理。
-async function callLlmWithRetry(apiKey, systemPrompt, userText, model = DEFAULT_GEMINI_MODEL) {
-  const label = normalizeGeminiModel(model);
+async function callChatCompletion(provider, systemPrompt, userText, strictHint) {
+  const response = await fetch(provider.url, {
+    method: 'POST',
+    redirect: 'error',
+    headers: { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: provider.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `${userText}${strictHint ? STRICT_JSON_REMINDER : ''}` }
+      ]
+    })
+  });
+  if (!response.ok) throw new Error(`${provider.name} API 请求失败（HTTP ${response.status}）。`);
+  const data = await response.json().catch(() => null);
+  if (!data || data.error || data.choices?.[0]?.error) throw new Error(`${provider.name} API 返回异常。`);
+  return parseModelJson(data.choices?.[0]?.message?.content, provider.name);
+}
+
+async function callGeminiWithRotation(provider, systemPrompt, userText, strictHint) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await callGemini(provider.nextApiKey(), provider.model, systemPrompt, userText, strictHint);
+    } catch (error) {
+      if (error.status !== 429 || attempt >= provider.keyCount) throw error;
+    }
+  }
+}
+
+// 格式失败时附加严格格式要求重试一次。Gemini 限流时在密钥轮询内处理。
+async function callLlmWithRetry(provider, systemPrompt, userText) {
+  const label = `${provider.name}（${provider.model}）`;
+  const call = strictHint => provider.url
+    ? callChatCompletion(provider, systemPrompt, userText, strictHint)
+    : callGeminiWithRotation(provider, systemPrompt, userText, strictHint);
   const startedAt = performance.now();
   try {
-    const result = await callGemini(apiKey, label, systemPrompt, userText, false);
+    const result = await call(false);
     log(`${label} 模型请求完成，用时 ${formatDuration(performance.now() - startedAt)}。`);
     return result;
   } catch (error) {
@@ -974,7 +1054,7 @@ async function callLlmWithRetry(apiKey, systemPrompt, userText, model = DEFAULT_
     }
     log(`${label} 第一次返回不是合法 JSON，已附加严格格式要求重试一次。`);
     const retryStartedAt = performance.now();
-    const result = await callGemini(apiKey, label, systemPrompt, userText, true);
+    const result = await call(true);
     log(`${label} 严格 JSON 重试完成，用时 ${formatDuration(performance.now() - retryStartedAt)}。`);
     return result;
   }
@@ -994,7 +1074,7 @@ $('#configTab').onclick = () => { rememberDashboardView('config'); $('#configTab
   if (dashboardActiveView === 'config') $('#configTab').click();
 })();
 
-async function analyzeReports(token, base, sheetTitle, regionRows, apiKey, startRow, rowCount, onlyRows = null, regionTab = '', dropdownSeed = null, model = DEFAULT_GEMINI_MODEL, privateRegion = false, strictAddress = false) {
+async function analyzeReports(token, base, sheetTitle, regionRows, provider, startRow, rowCount, onlyRows = null, regionTab = '', dropdownSeed = null, privateRegion = false, strictAddress = false) {
   const parseAge = value => {
     const text = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
     return /^\d{1,3}$/.test(text) && Number(text) <= 130 ? Number(text) : null;
@@ -1024,7 +1104,7 @@ async function analyzeReports(token, base, sheetTitle, regionRows, apiKey, start
     if (!report) { log(`第 ${startRow + index} 行 AL 列为空，跳过。`); continue; }
     let parsed;
     try {
-      parsed = await callLlmWithRetry(apiKey, `${LLM_SYSTEM_PROMPT} ${MULTILINGUAL_REPORT_HINT}`, `请从下面报告提取并推断字段：\n${report}`, model);
+      parsed = await callLlmWithRetry(provider, `${LLM_SYSTEM_PROMPT} ${MULTILINGUAL_REPORT_HINT}`, `请从下面报告提取并推断字段：\n${report}`);
     } catch (error) {
       // One bad report or a rate-limited model must not kill the whole run:
       // skip the row and keep going, the rest of the flow still applies.
@@ -1066,11 +1146,11 @@ async function analyzeReports(token, base, sheetTitle, regionRows, apiKey, start
       const candidates = countryRows.filter(row => row[2] && (!province || sameRegion(row[1], province)));
       if (candidates.length) {
         try {
-          const inferred = await callLlmWithRetry(apiKey, CONFIGURED_ADDRESS_SYSTEM_PROMPT,
+          const inferred = await callLlmWithRetry(provider, CONFIGURED_ADDRESS_SYSTEM_PROMPT,
             JSON.stringify({ country, province, fields: {
               province: explicitProvince, city: explicitCity,
               commune: parsed.explicit_commune, quartier: parsed.explicit_quartier
-            }, places: allPlaceHints, hierarchy: candidates.map((row, id) => [id, ...row.slice(0, 3)]) }), model);
+            }, places: allPlaceHints, hierarchy: candidates.map((row, id) => [id, ...row.slice(0, 3)]) }));
           if (Number.isInteger(inferred?.row) && inferred.row >= 0 && inferred.row < candidates.length) {
             addressRow = candidates[inferred.row];
             if (province) address.nearInferred++; else address.geoInferred++;
@@ -1365,8 +1445,12 @@ getDeviceConfig().then(async values => {
   renderADateOptions(values.aDateValue);
   updateTransferGroupVisual();
 });
-extensionStorage.local.get({ geminiApiKey: '', llmModel: 'gemini-3.5-flash-lite', regionTab: '', regionTabGroup4: '', regionTabGroup5: '', regionConfigCache: null, googleApiConnectedAt: 0, transferGroup: 'group1' }).then(values => {
-  $('#llmModel').value = normalizeGeminiModel(values.llmModel); $('#llmKey').value = values.geminiApiKey; for (const key of regionTabKeys) $(`#${key}`).value = values[key];
+extensionStorage.local.get({ ...reportSettings, regionTab: '', regionTabGroup4: '', regionTabGroup5: '', regionConfigCache: null, googleApiConnectedAt: 0, transferGroup: 'group1' }).then(values => {
+  for (const key of [...Object.keys(reportSettings), ...regionTabKeys]) $(`#${key}`).value = values[key];
+  $('#llmModel').value = normalizeGeminiModel(values.llmModel);
+  $('#openRouterModel').value = normalizeOpenRouterModel(values.openRouterModel);
+  $('#reportProvider').value = normalizeReportProvider(values.reportProvider);
+  $('#reportProvider').onchange();
   if (values.googleApiConnectedAt) {
     $('#connectionDot').parentElement.classList.add('ok');
     $('#connectionText').textContent = `Google API 已授权（${cacheTime(values.googleApiConnectedAt)}）`;
@@ -1431,8 +1515,8 @@ $('#save').onclick = async () => {
   const targetUrl = $('#targetUrl').value.trim(); const targetTab = $('#targetTab').value.trim(); const statusText = $('#statusText').value.trim(); const aDateValue = $('#aDateValue').value;
   const timeOptions = parseADateOptions($('#aDateOptions').value);
   const personnelId = $('#personnelId').value.trim();
-  const llmModel = normalizeGeminiModel($('#llmModel').value);
-  const geminiApiKey = $('#llmKey').value.trim();
+  const reportValues = Object.fromEntries(Object.keys(reportSettings).map(key => [key, $(`#${key}`).value.trim()]));
+  const provider = selectReportProvider(reportValues);
   const regionTab = selectedRegionTab($('#transferGroup').value);
   // Validate everything before writing anything: a failed save used to leave
   // half-old/half-new configuration behind.
@@ -1441,16 +1525,17 @@ $('#save').onclick = async () => {
   if (!timeOptions.length) { $('#saveStatus').textContent = '请填写至少一个 A 列时间选项'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!timeOptions.includes(aDateValue)) { $('#saveStatus').textContent = '请选择 A 列日期/时间'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!regionTab) { $('#saveStatus').textContent = '请填写地区配置分表名称'; $('#saveStatus').style.color = '#c5221f'; return; }
-  if (!geminiApiKey) { $('#saveStatus').textContent = '请填写 API Key'; $('#saveStatus').style.color = '#c5221f'; return; }
+  if (!provider.apiKey) { $('#saveStatus').textContent = `请填写 ${provider.name} API Key`; $('#saveStatus').style.color = '#c5221f'; return; }
   const aDateOptions = timeOptions.join('\n');
-  await extensionStorage.local.set({ targetUrl, targetTab, statusText, aDateValue, aDateOptions, personnelId, transferGroup, targetHeaderRows, deviceConfigMigrated: true, geminiApiKey, llmModel, ...Object.fromEntries(regionTabKeys.map(key => [key, $(`#${key}`).value.trim()])) });
+  await extensionStorage.local.set({ targetUrl, targetTab, statusText, aDateValue, aDateOptions, personnelId, transferGroup, targetHeaderRows, deviceConfigMigrated: true, ...reportValues, ...Object.fromEntries(regionTabKeys.map(key => [key, $(`#${key}`).value.trim()])) });
   $('#aDateOptions').value = aDateOptions;
   $('#saveStatus').textContent = '配置已保存'; $('#saveStatus').style.color = '#188038'; log(`目标位置已保存：${targetTab || '默认分表'}`, 'success');
 };
 
 const syncConfigKeys = deviceConfigKeys;
-const exportableLocalConfigKeys = ['llmModel', ...regionTabKeys];
-const localConfigKeys = ['geminiApiKey', ...exportableLocalConfigKeys];
+const exportableLocalConfigKeys = ['reportProvider', 'llmModel', 'openRouterModel', 'openAiModel', ...regionTabKeys];
+const importableLocalConfigKeys = ['geminiApiKey', ...exportableLocalConfigKeys];
+const localConfigKeys = ['openRouterApiKey', 'openAiApiKey', ...importableLocalConfigKeys];
 const buildConfigExport = (config, local) => ({
   format: 'form-filling-tool-config', version: 1, exportedAt: new Date().toISOString(),
   sync: Object.fromEntries(syncConfigKeys.filter(key => Object.hasOwn(config, key)).map(key => [key, config[key]])),
@@ -1463,7 +1548,7 @@ function parseConfigImport(payload) {
   }
   const values = Object.fromEntries([
     ...syncConfigKeys.filter(key => Object.hasOwn(payload.sync, key)).map(key => [key, payload.sync[key]]),
-    ...localConfigKeys.filter(key => Object.hasOwn(payload.local, key)).map(key => [key, payload.local[key]])
+    ...importableLocalConfigKeys.filter(key => Object.hasOwn(payload.local, key)).map(key => [key, payload.local[key]])
   ]);
   for (const [key, value] of Object.entries(values)) {
     if (typeof value !== 'string' || value.length > 8192) {
@@ -1599,9 +1684,7 @@ $('#start').onclick = async () => {
       await extensionStorage.local.set({ googleApiConnectedAt: Date.now() });
       $('#connectionDot').parentElement.classList.add('ok'); $('#connectionText').textContent = t('Google API 已授权'); log('Google 授权成功。', 'success');
       setStep(2, 2); log('正在定位目标行：读取目标表设置，核验续传记录或查找最上面数据行。');
-      const { geminiApiKey, llmModel: savedLlmModel = DEFAULT_GEMINI_MODEL } = await extensionStorage.local.get({ geminiApiKey: '', llmModel: DEFAULT_GEMINI_MODEL });
-      const llmModel = normalizeGeminiModel(savedLlmModel);
-      if (!geminiApiKey) throw new Error(`尚未配置 Gemini API Key，请在右侧配置后重试。`);
+      const provider = await getReportProvider();
       const spreadsheetId = parseSpreadsheetId(targetUrl);
       const apiBase = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
       const privateRegionRows = privateRegion ? await syncRegionConfig(token, apiBase, regionTab, false, true) : null;
@@ -1613,8 +1696,8 @@ $('#start').onclick = async () => {
       const phoneResult = await fillPhoneCountries(token, apiBase, targetTab, result.startRow, result.rowCount, transferGroup === 'group3');
       const phoneFilled = phoneResult.count;
       log(`Q 列区号处理完成，补全 V 列 ${phoneFilled} 个空单元格。`, 'success');
-      setStep(10, 10); log(`正在逐行调用 Gemini（${llmModel}） 拆解 AL${result.startRow}:AL${result.startRow + result.rowCount - 1}。`);
-      const analysis = await analyzeReports(token, apiBase, targetTab, regionRows, geminiApiKey, result.startRow, result.rowCount, null, regionTab, phoneResult.dropdown, llmModel, privateRegion, transferGroup === 'group3');
+      setStep(10, 10); log(`正在逐行调用 ${provider.name}（${provider.model}）拆解 AL${result.startRow}:AL${result.startRow + result.rowCount - 1}。`);
+      const analysis = await analyzeReports(token, apiBase, targetTab, regionRows, provider, result.startRow, result.rowCount, null, regionTab, phoneResult.dropdown, privateRegion, transferGroup === 'group3');
       setStep(11, 11); log(`报告拆解完成：分析 ${analysis.analyzed} 行，回写 ${analysis.updated} 个字段${analysis.failedRows.length ? `；失败 ${analysis.failedRows.length} 行（第 ${analysis.failedRows.join(', ')} 行），其余步骤继续` : ''}。`, analysis.failedRows.length ? 'error' : 'success');
       // 失败行入队：流程控制页的“重跑上次失败行”按钮只处理这些行，不整批重跑。
       await extensionStorage.local.set({ llmRetryQueue: analysis.failedRows.length ? { rows: analysis.failedRows, privateRegion, spreadsheetId, targetTab, transferGroup, regionTab, savedAt: Date.now() } : null });
@@ -1700,13 +1783,11 @@ $('#retryFailedRows').onclick = async () => {
     if (queue.regionTab && queue.regionTab !== regionTab) throw new Error('请恢复上次转交使用的地区配置分表后再重跑。');
     log(privateRegion ? '正在读取当前队伍的专用地区配置…' : `正在同步地区配置分表“${regionTab}”…`);
     const regionRows = await syncRegionConfig(token, base, regionTab, false, privateRegion);
-    const { geminiApiKey, llmModel: savedLlmModel = DEFAULT_GEMINI_MODEL } = await extensionStorage.local.get({ geminiApiKey: '', llmModel: DEFAULT_GEMINI_MODEL });
-    const llmModel = normalizeGeminiModel(savedLlmModel);
-    if (!geminiApiKey) throw new Error(`尚未配置 Gemini API Key。`);
+    const provider = await getReportProvider();
     const spanStart = rows[0];
     const spanEnd = rows[rows.length - 1];
-    log(`开始重跑 ${rows.length} 个失败行：第 ${rows.join(', ')} 行，逐行调用 Gemini…`);
-    const analysis = await analyzeReports(token, base, targetTab, regionRows, geminiApiKey, spanStart, spanEnd - spanStart + 1, new Set(rows), regionTab, null, llmModel, privateRegion, transferGroup === 'group3');
+    log(`开始重跑 ${rows.length} 个失败行：第 ${rows.join(', ')} 行，逐行调用 ${provider.name}（${provider.model}）…`);
+    const analysis = await analyzeReports(token, base, targetTab, regionRows, provider, spanStart, spanEnd - spanStart + 1, new Set(rows), regionTab, null, privateRegion, transferGroup === 'group3');
     log(`重跑完成：成功 ${analysis.analyzed} 行，回写 ${analysis.updated} 个字段${analysis.failedRows.length ? `；仍失败 ${analysis.failedRows.length} 行（第 ${analysis.failedRows.join(', ')} 行）` : ''}。`, analysis.failedRows.length ? 'error' : 'success');
     if (analysis.failedRows.length) {
       await extensionStorage.local.set({ llmRetryQueue: { ...queue, rows: analysis.failedRows, savedAt: Date.now() } });
