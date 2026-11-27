@@ -180,6 +180,7 @@ async function main() {
   assert.ok(!elements['#targetDiagnosisReport'].textContent.includes(canary));
   const stopAfterWrite = new Error('Captured first write');
   const transfer = {
+    crypto: require('node:crypto').webcrypto, TextEncoder,
     parseSpreadsheetId: () => 'local-target',
     quoteSheet: title => title,
     parseTransferValues: () => [['new data']],
@@ -225,8 +226,9 @@ async function main() {
     await assert.rejects(transfer.transferWithSheetsApi('new data', 'token', targetUrl, 'Target', '', '', '', null, 'group1', headerRows), stopAfterWrite);
     assert.equal(transfer.writeRange, `Target!C${firstDataRow}:R${firstDataRow}`);
   }
-  const committed = { sourceText: 'new data', spreadsheetId: 'local-target', sheetTitle: 'Target', startRow: 3, rowCount: 1 };
+  let committed = { sourceText: 'new data', spreadsheetId: 'local-target', sheetTitle: 'Target', startRow: 3, rowCount: 1 };
   transfer.extensionStorage.local.get = async () => ({ formTransferCommitted: committed });
+  transfer.extensionStorage.local.set = async values => { committed = values.formTransferCommitted; };
   transfer.parseTransferValues = () => [['original C', 'keep D', 'original E', 'restore F', 'original G', '']];
   const current = ['time', '', 'original C', 'keep D', 'status', '', '', 'collaborator edit'];
   let writes = [];
@@ -248,6 +250,8 @@ async function main() {
   };
   const resume = () => transfer.transferWithSheetsApi('new data', 'token', targetUrl, 'Target', 'status', 'time', '', null, 'group1', '2');
   await assert.rejects(resume(), /已取消续传/);
+  assert.equal(Object.hasOwn(committed, 'sourceText'), false);
+  assert.equal(committed.sourceDigest, require('node:crypto').createHash('sha256').update('new data').digest('hex'));
   assert.match(confirmations[0], /H3/);
   assert.doesNotMatch(confirmations[0], /collaborator edit/);
   assert.equal(writes.length, 0);

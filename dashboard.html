@@ -14,6 +14,10 @@
   </header>
   <main class="layout">
     <section class="main-col">
+      <aside id="extensionUpdate" class="card section-title" hidden>
+        <strong id="extensionUpdateMessage" aria-live="polite"></strong>
+        <a id="extensionUpdateDownload" class="api-key-help" target="_blank" rel="noopener noreferrer">下载新版 ZIP</a>
+      </aside>
       <div class="hero card"><div><p class="eyebrow">当前流程</p><h2>转交表格</h2><p id="heroText">等待从 Google 表格接收选区数据。</p></div><div class="hero-banner" aria-hidden="true"><img id="heroBanner" src="assets/team-africa-banner.png" alt=""></div><button id="start" class="primary">开始转交</button></div>
       <nav class="view-tabs" aria-label="控制台页面"><button id="workflowTab" class="view-tab active">流程控制</button><button id="configTab" class="view-tab">参数配置</button></nav>
       <div id="workflowView"><div class="card"><div class="section-title"><h3>流程进度</h3><span id="progressText">0 / 12</span></div><div class="phases" id="phases"></div></div>
@@ -60,6 +64,7 @@
           <label data-provider="openai" hidden>OpenAI 模型 ID<input id="openAiModel" placeholder="gpt-4.1-mini" maxlength="256" spellcheck="false"></label>
           <label data-provider="openai" hidden>OpenAI API Key <a class="api-key-help" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">申请 API Key</a><span class="secret-field"><textarea id="openAiApiKey" rows="1" spellcheck="false" autocomplete="off" placeholder="sk-..."></textarea><button class="secret-toggle" type="button" aria-label="显示 API Key" title="显示 API Key">👁</button></span></label>
           <p class="tip">各服务的 API Key 分别保存在本机扩展存储中。切换服务后，请点击「保存配置」。</p>
+          <label class="config-wide"><input id="sessionReportKeys" type="checkbox" style="display:inline;width:auto"> 仅在本次浏览器会话保存 API Key</label>
           <p class="tip">运行报告拆解时，报告正文会发送给已保存的服务处理。请避免发送不必要的敏感信息。</p>
         </fieldset>
         <p id="saveStatus" class="status"></p>

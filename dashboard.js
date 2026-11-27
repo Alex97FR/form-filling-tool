@@ -10,6 +10,42 @@ if (!extensionStorage?.local || !extensionStorage?.sync) {
   }
   throw new Error(interfaceLocale.t('扩展 API 不可用：请从扩展图标打开 dashboard.html。'));
 }
+const releaseRepository = 'Alex97FR/form-filling-tool';
+function availableExtensionUpdate(release, installedVersion) {
+  if (release?.draft !== false || release.prerelease !== false) return null;
+  const tag = release.tag_name;
+  if (typeof tag !== 'string' || tag.length > 100) return null;
+  const match = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(tag);
+  if (!match) return null;
+  const installed = installedVersion.split('.').map(Number);
+  const published = match.slice(1).map(Number);
+  if (published.some(part => part > 65535)) return null;
+  const difference = published.map((part, index) => part - (installed[index] || 0)).find(part => part !== 0);
+  if (!(difference > 0)) return null;
+  const filename = `Form-filling-tool-${tag}.zip`;
+  const url = `https://github.com/${releaseRepository}/releases/download/${tag}/${filename}`;
+  const ready = Array.isArray(release.assets) && release.assets.some(asset =>
+    asset?.name === filename && asset.state === 'uploaded' && asset.browser_download_url === url
+  );
+  return ready ? { tag, url } : null;
+}
+
+async function checkExtensionUpdate() {
+  const response = await fetch(`https://api.github.com/repos/${releaseRepository}/releases/latest`, {
+    credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+    headers: { Accept: 'application/vnd.github+json' }
+  });
+  if (!response.ok) return;
+  const version = extensionApi.runtime.getManifest().version;
+  const update = availableExtensionUpdate(await response.json(), version);
+  if (!update) return;
+  $('#extensionUpdateDownload').href = update.url;
+  interfaceLocale.render($('#extensionUpdateMessage'), () => interfaceLocale.t(`发现新版 ${update.tag}（当前 v${version}）`));
+  $('#extensionUpdate').hidden = false;
+}
+// 更新查询失败时保留正常的转交流程。
+void checkExtensionUpdate().catch(() => {});
+
 // 参数必须按设备隔离；storage.sync 会随浏览器账号同步到其他电脑。
 const defaultADateOptions = ['10 a.m.', '1 p.m.', '6 p.m.', '8 p.m.', '8:30 p.m.', '9:30 p.m.'].join('\n');
 const deviceConfigKeys = ['targetUrl', 'targetTab', 'statusText', 'aDateValue', 'aDateOptions', 'personnelId', 'transferGroup', 'targetHeaderRows'];
@@ -82,11 +118,12 @@ const openAppDialog = ({ message, confirm = false, danger = false, confirmLabel 
   const close = value => { overlay.remove(); document.removeEventListener('keydown', onKeyDown); resolve(value); };
   const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'app-dialog-cancel'; cancel.textContent = t(cancelLabel); cancel.onclick = () => close(false);
   const ok = document.createElement('button'); ok.type = 'button'; ok.className = danger ? 'app-dialog-primary danger' : 'app-dialog-primary'; ok.textContent = t(confirm ? confirmLabel : '知道了'); ok.onclick = () => close(true);
-  const onKeyDown = event => { if (event.key === 'Escape' && confirm) close(false); if (event.key === 'Enter') close(true); };
+  const onKeyDown = event => { if (event.key === 'Escape' && confirm) close(false); };
   if (confirm) actions.append(cancel, ok); else actions.append(ok);
   card.append(title, body, actions); overlay.append(card); document.body.append(overlay);
   overlay.onclick = event => { if (event.target === overlay) close(confirm ? false : true); };
-  document.addEventListener('keydown', onKeyDown); ok.focus();
+  document.addEventListener('keydown', onKeyDown);
+  (confirm && danger ? cancel : ok).focus();
 });
 const openAppNotice = message => openAppDialog({ message });
 const openAppConfirm = (message, danger = false, labels = {}) => openAppDialog({ message, confirm: true, danger, ...labels });
@@ -281,7 +318,9 @@ async function getWebGoogleToken() {
     // alone is enough; Google remembers prior approval for the client.
     scope: GOOGLE_SCOPE, prompt: 'select_account', state
   });
-  const redirected = await extensionApi.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true });
+  let redirected;
+  try { redirected = await extensionApi.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true }); }
+  catch { throw new Error('Google 网页授权未完成，请重新授权。'); }
   const { token, expiresIn } = parseGoogleAuthRedirect(redirected, redirectUri, state);
   // Web-flow tokens expire in about an hour and cannot be refreshed (implicit
   // flow), so record the expiry and stop trusting a stale cached token.
@@ -305,10 +344,8 @@ async function getGoogleToken(force = false) {
     const result = await extensionApi.identity.getAuthToken({ interactive: true });
     const token = typeof result === 'string' ? result : result?.token;
     if (token) return token;
-  } catch (authError) {
-    // Surface why the browser-managed path failed instead of silently
-    // degrading to the web flow, which cannot auto-refresh tokens.
-    log(`浏览器内建授权不可用（${authError?.message || authError}），改用网页授权窗口。若每次都这样，请检查浏览器是否已登录 Google 账号。`);
+  } catch {
+    log('浏览器内建授权不可用，改用网页授权窗口。若每次都这样，请检查浏览器是否已登录 Google 账号。');
   }
   try { return await getWebGoogleToken(); }
   catch (error) { throw new Error(`Google 授权失败：${error?.message || String(error)}。`); }
@@ -332,7 +369,11 @@ async function withFreshToken(run) {
 }
 
 async function sheetsRequest(token, url, init = {}) {
-  const response = await fetch(url, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
+  const destination = new URL(url);
+  if (destination.origin !== 'https://sheets.googleapis.com' || destination.username || destination.password) {
+    throw new Error('Google Sheets API 地址无效。');
+  }
+  const response = await fetch(destination.href, { ...init, redirect: 'error', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
   if (!response.ok) {
     const detail = await response.text();
     const apiDisabled = response.status === 403 && detail.includes('has not been used');
@@ -344,7 +385,9 @@ async function sheetsRequest(token, url, init = {}) {
     error.status = response.status;
     throw error;
   }
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  try { return await response.json(); }
+  catch { throw new Error('Google Sheets API 返回异常。'); }
 }
 
 async function readTargetSheet(token, url, label, report = log) {
@@ -682,6 +725,12 @@ const reportSettings = {
   reportProvider: 'gemini',
   ...Object.fromEntries(Object.values(reportProviders).flatMap(({ key, model, defaultModel }) => [[key, ''], [model, defaultModel]]))
 };
+const reportKeyDefaults = Object.fromEntries(Object.values(reportProviders).map(({ key }) => [key, '']));
+async function loadReportSettings() {
+  const local = await extensionStorage.local.get({ ...reportSettings, sessionReportKeys: false });
+  if (!local.sessionReportKeys) return local;
+  return { ...local, ...reportKeyDefaults, ...await extensionStorage.session?.get(reportKeyDefaults) };
+}
 function selectReportProvider(values) {
   const id = normalizeReportProvider(values.reportProvider);
   const provider = reportProviders[id];
@@ -698,7 +747,7 @@ function selectReportProvider(values) {
   };
 }
 async function getReportProvider() {
-  const provider = selectReportProvider(await extensionStorage.local.get(reportSettings));
+  const provider = selectReportProvider(await loadReportSettings());
   if (!provider.apiKey) throw new Error(`尚未配置 ${provider.name} API Key，请在设置中填写并保存。`);
   return provider;
 }
@@ -988,6 +1037,7 @@ async function callGemini(apiKey, model, systemPrompt, userText, strictHint = fa
   const isGemma = model.startsWith('gemma-');
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: 'POST',
+    redirect: 'error',
     headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -1002,7 +1052,7 @@ async function callGemini(apiKey, model, systemPrompt, userText, strictHint = fa
     error.status = response.status;
     throw error;
   }
-  const data = await response.json();
+  const data = await response.json().catch(() => { throw new Error('Gemini API 返回异常。'); });
   const content = data.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '';
   return parseModelJson(content, 'Gemini');
 }
@@ -1250,7 +1300,14 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
   // A committed marker means this exact selection was already written to this
   // sheet during an interrupted run: never write the same rows twice.
   const profileKey = transferGroup === 'group2' ? 'group2-fixed-column-map-v1' : 'group1';
-  const reusable = committed?.sourceText === text && committed.spreadsheetId === spreadsheetId && committed.sheetTitle === sheetTitle && (committed.profileKey || 'group1') === profileKey ? committed : null;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  const sourceDigest = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  const reusable = (committed?.sourceDigest === sourceDigest || committed?.sourceText === text)
+    && committed.spreadsheetId === spreadsheetId && committed.sheetTitle === sheetTitle && (committed.profileKey || 'group1') === profileKey ? committed : null;
+  if (reusable && Object.hasOwn(reusable, 'sourceText')) {
+    const { sourceText, ...metadata } = reusable;
+    await extensionStorage.local.set({ formTransferCommitted: { ...metadata, sourceDigest } });
+  }
   if (reusable && reusable.startRow < dataStartRow) throw new Error('上次转交的写入位置现在属于表头。请先调整表头设置，再继续上次转交。');
   const metadata = await readTargetSheet(token, `${base}?fields=sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),conditionalFormats)`, '目标表基本信息及条件格式');
   const sheetInfo = metadata.sheets?.map(item => item.properties).find(item => item.title === sheetTitle);
@@ -1373,7 +1430,7 @@ async function transferWithSheetsApi(text, token, targetUrl, targetTab, statusTe
     await writeValues(sourceData(startRow, rowCount));
     // Persist right after the write succeeds: if any later step fails, a rerun
     // must resume from this point instead of duplicating the block.
-    await extensionStorage.local.set({ formTransferCommitted: { sourceText: text, spreadsheetId, sheetTitle, profileKey, startRow, rowCount: values.length, committedAt: Date.now() } });
+    await extensionStorage.local.set({ formTransferCommitted: { sourceDigest, spreadsheetId, sheetTitle, profileKey, startRow, rowCount: values.length, committedAt: Date.now() } });
     setStep(3, 3);
     log('已写入目标 C:BM 第 ' + startRow + '～' + (startRow + rowCount - 1) + ' 行。', 'success');
   }
@@ -1445,7 +1502,13 @@ getDeviceConfig().then(async values => {
   renderADateOptions(values.aDateValue);
   updateTransferGroupVisual();
 });
-extensionStorage.local.get({ ...reportSettings, regionTab: '', regionTabGroup4: '', regionTabGroup5: '', regionConfigCache: null, googleApiConnectedAt: 0, transferGroup: 'group1' }).then(values => {
+Promise.all([
+  loadReportSettings(),
+  extensionStorage.local.get({ regionTab: '', regionTabGroup4: '', regionTabGroup5: '', regionConfigCache: null, googleApiConnectedAt: 0, transferGroup: 'group1' })
+]).then(([report, settings]) => {
+  const values = { ...report, ...settings };
+  $('#sessionReportKeys').checked = values.sessionReportKeys;
+  $('#sessionReportKeys').disabled = !extensionStorage.session;
   for (const key of [...Object.keys(reportSettings), ...regionTabKeys]) $(`#${key}`).value = values[key];
   $('#llmModel').value = normalizeGeminiModel(values.llmModel);
   $('#openRouterModel').value = normalizeOpenRouterModel(values.openRouterModel);
@@ -1527,15 +1590,26 @@ $('#save').onclick = async () => {
   if (!regionTab) { $('#saveStatus').textContent = '请填写地区配置分表名称'; $('#saveStatus').style.color = '#c5221f'; return; }
   if (!provider.apiKey) { $('#saveStatus').textContent = `请填写 ${provider.name} API Key`; $('#saveStatus').style.color = '#c5221f'; return; }
   const aDateOptions = timeOptions.join('\n');
-  await extensionStorage.local.set({ targetUrl, targetTab, statusText, aDateValue, aDateOptions, personnelId, transferGroup, targetHeaderRows, deviceConfigMigrated: true, ...reportValues, ...Object.fromEntries(regionTabKeys.map(key => [key, $(`#${key}`).value.trim()])) });
+  const sessionReportKeys = $('#sessionReportKeys').checked;
+  try {
+    if (sessionReportKeys) {
+      await extensionStorage.session.set(Object.fromEntries(Object.keys(reportKeyDefaults).map(key => [key, reportValues[key]])));
+      Object.assign(reportValues, reportKeyDefaults);
+    }
+    await extensionStorage.local.set({ targetUrl, targetTab, statusText, aDateValue, aDateOptions, personnelId, transferGroup, targetHeaderRows, deviceConfigMigrated: true, sessionReportKeys, ...reportValues, ...Object.fromEntries(regionTabKeys.map(key => [key, $(`#${key}`).value.trim()])) });
+    if (!sessionReportKeys) await extensionStorage.session?.remove(Object.keys(reportKeyDefaults));
+  } catch {
+    $('#saveStatus').textContent = '无法保存配置，请重新加载扩展后重试。';
+    $('#saveStatus').style.color = '#c5221f';
+    return;
+  }
   $('#aDateOptions').value = aDateOptions;
   $('#saveStatus').textContent = '配置已保存'; $('#saveStatus').style.color = '#188038'; log(`目标位置已保存：${targetTab || '默认分表'}`, 'success');
 };
 
 const syncConfigKeys = deviceConfigKeys;
 const exportableLocalConfigKeys = ['reportProvider', 'llmModel', 'openRouterModel', 'openAiModel', ...regionTabKeys];
-const importableLocalConfigKeys = ['geminiApiKey', ...exportableLocalConfigKeys];
-const localConfigKeys = ['openRouterApiKey', 'openAiApiKey', ...importableLocalConfigKeys];
+const localConfigKeys = ['geminiApiKey', 'openRouterApiKey', 'openAiApiKey', 'sessionReportKeys', ...exportableLocalConfigKeys];
 const buildConfigExport = (config, local) => ({
   format: 'form-filling-tool-config', version: 1, exportedAt: new Date().toISOString(),
   sync: Object.fromEntries(syncConfigKeys.filter(key => Object.hasOwn(config, key)).map(key => [key, config[key]])),
@@ -1548,7 +1622,7 @@ function parseConfigImport(payload) {
   }
   const values = Object.fromEntries([
     ...syncConfigKeys.filter(key => Object.hasOwn(payload.sync, key)).map(key => [key, payload.sync[key]]),
-    ...importableLocalConfigKeys.filter(key => Object.hasOwn(payload.local, key)).map(key => [key, payload.local[key]])
+    ...exportableLocalConfigKeys.filter(key => Object.hasOwn(payload.local, key)).map(key => [key, payload.local[key]])
   ]);
   for (const [key, value] of Object.entries(values)) {
     if (typeof value !== 'string' || value.length > 8192) {
@@ -1556,6 +1630,7 @@ function parseConfigImport(payload) {
     }
   }
   if (values.transferGroup && normalizeTransferGroup(values.transferGroup) !== values.transferGroup) throw new Error('组别配置不正确。');
+  if (Object.hasOwn(values, 'reportProvider') && normalizeReportProvider(values.reportProvider) !== values.reportProvider) throw new Error('配置字段格式不正确。');
   if (values.targetUrl && !isGoogleSheetsUrl(values.targetUrl)) throw new Error('目标 Google 表格网址不正确。');
   if (values.targetHeaderRows && (!/^\d+$/.test(values.targetHeaderRows) || Number(values.targetHeaderRows) > 2147483646)) throw new Error('目标表头行数配置不正确。');
   return values;
@@ -1572,20 +1647,27 @@ $('#exportConfig').onclick = async () => {
 $('#importConfig').onclick = () => $('#configFile').click();
 $('#configFile').onchange = async event => {
   const file = event.target.files?.[0]; if (!file) return;
+  event.target.value = '';
   try {
     if (file.size > 256 * 1024) throw new Error('配置文件超过 256 KB，请检查文件是否正确。');
     const payload = JSON.parse(await file.text());
     const values = parseConfigImport(payload);
+    const current = await getDeviceConfig();
+    const { reportProvider } = await extensionStorage.local.get({ reportProvider: 'gemini' });
+    const target = values.targetUrl ?? current.targetUrl;
+    const tab = values.targetTab ?? current.targetTab;
+    const provider = reportProviders[normalizeReportProvider(values.reportProvider ?? reportProvider)].name;
+    const summary = t('导入后的目标工作簿和报告拆解服务：') + '\n' + [target, tab || 'Sheet1', provider].join('\n');
+    if (!await openAppConfirm(summary, true)) return;
     await extensionStorage.local.set({ ...values, deviceConfigMigrated: true });
     await openAppNotice('配置导入成功，页面将重新加载。'); location.reload();
   } catch (error) { await openAppNotice(error instanceof SyntaxError ? '配置导入失败：文件不是有效的 JSON。' : `配置导入失败：${error.message || error}`); }
-  event.target.value = '';
 };
 $('#clearConfig').onclick = async () => {
   if (!await openAppConfirm('确定清除所有配置、API Key 和本地数据吗？此操作不可撤销。', true)) return;
   await extensionStorage.local.remove([...syncConfigKeys, ...localConfigKeys, 'deviceConfigMigrated', 'handoffStrictCity', 'handoffHistory', 'reportLabels', 'regionConfigCache', 'regionConfigLastCheckedAt', 'regionConfigLastCheckRows', 'googleApiConnectedAt', 'formTransferSource', 'formTransferCommitted', 'formTransferPending', 'llmRetryQueue', 'groupTab', 'deepLabels', 'realtimeRecordUrl', 'realtimeRecordTab', 'realtimeLastQueries', 'groqApiKey', 'groqApiKeys', 'llmProvider']);
   await extensionStorage.local.set({ deviceConfigMigrated: true });
-  if (extensionStorage.session) await extensionStorage.session.remove(['webAccessToken', 'webTokenExpiresAt']);
+  if (extensionStorage.session) await extensionStorage.session.remove(['webAccessToken', 'webTokenExpiresAt', ...Object.keys(reportKeyDefaults)]);
   await openAppNotice('配置已清除，页面将重新加载。'); location.reload();
 };
 
@@ -1680,11 +1762,12 @@ $('#start').onclick = async () => {
   const text = formTransferSource.text;
   setStep(1, 1); $('#connectionText').textContent = t('正在请求 Google 授权'); log('请求 Google Sheets 编辑权限。');
   try {
+    const provider = await getReportProvider();
+    if (!await openAppConfirm(`本次将把报告正文发送给 ${provider.name} 处理。是否继续？`, true)) return;
     const { result, phoneFilled, analysis } = await withFreshToken(async token => {
       await extensionStorage.local.set({ googleApiConnectedAt: Date.now() });
       $('#connectionDot').parentElement.classList.add('ok'); $('#connectionText').textContent = t('Google API 已授权'); log('Google 授权成功。', 'success');
       setStep(2, 2); log('正在定位目标行：读取目标表设置，核验续传记录或查找最上面数据行。');
-      const provider = await getReportProvider();
       const spreadsheetId = parseSpreadsheetId(targetUrl);
       const apiBase = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
       const privateRegionRows = privateRegion ? await syncRegionConfig(token, apiBase, regionTab, false, true) : null;
@@ -1773,6 +1856,8 @@ $('#retryFailedRows').onclick = async () => {
     if (queue.spreadsheetId !== spreadsheetId || queue.targetTab !== targetTab) {
       throw new Error('请切换回上次转交使用的目标表和分表后再重跑。');
     }
+    const provider = await getReportProvider();
+    if (!await openAppConfirm(`本次将把报告正文发送给 ${provider.name} 处理。是否继续？`, true)) return;
     const token = await getGoogleToken();
     const base = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
     setStep(0, 0);
@@ -1783,7 +1868,6 @@ $('#retryFailedRows').onclick = async () => {
     if (queue.regionTab && queue.regionTab !== regionTab) throw new Error('请恢复上次转交使用的地区配置分表后再重跑。');
     log(privateRegion ? '正在读取当前队伍的专用地区配置…' : `正在同步地区配置分表“${regionTab}”…`);
     const regionRows = await syncRegionConfig(token, base, regionTab, false, privateRegion);
-    const provider = await getReportProvider();
     const spanStart = rows[0];
     const spanEnd = rows[rows.length - 1];
     log(`开始重跑 ${rows.length} 个失败行：第 ${rows.join(', ')} 行，逐行调用 ${provider.name}（${provider.model}）…`);

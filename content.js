@@ -103,6 +103,7 @@
       tab.click();
     }
     await new Promise(resolve => setTimeout(resolve, 1800));
+    if (!pendingTargetMatches(location.href, pending.targetUrl)) return;
     await navigator.clipboard.writeText(pending.text);
     const panel = document.createElement('div');
     await refreshLanguage();
@@ -119,7 +120,7 @@
       margin: '10px 8px 0 0', padding: '6px 10px', cursor: 'pointer'
     }));
     copy.onclick = async event => {
-      if (!event.isTrusted) return;
+      if (!event.isTrusted || !pendingTargetMatches(location.href, pending.targetUrl)) return;
       await navigator.clipboard.writeText(pending.text);
       notify('数据已复制，请点击目标首个空行后按 Ctrl+V。');
     };

@@ -67,7 +67,7 @@ async function syncRegionConfigAtNoon() {
   if (!token) return;
   const sheet = `'${regionTab.replaceAll("'", "''")}'`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${id}/values/${encodeURIComponent(`${sheet}!A:C`)}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`;
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(url, { redirect: 'error', headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) return;
   const rows = (await response.json()).values || [];
   const { regionConfigCache } = await chrome.storage.local.get({ regionConfigCache: null });

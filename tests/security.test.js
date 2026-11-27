@@ -37,6 +37,21 @@ assert.equal(formatContext.extend([rules[3]], 7, 100, 3, true).length, 0); // Un
 const appendedRule = { ranges: [{ sheetId: 7, startRowIndex: 0, endRowIndex: 100 }] };
 assert.equal(formatContext.extend([appendedRule], 7, 100, 3, true)[0].updateConditionalFormatRule.rule.ranges[0].endRowIndex, 103);
 const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end));
+const updateContext = {};
+vm.runInNewContext(slice('const releaseRepository =', 'async function checkExtensionUpdate')
+  + '\nglobalThis.availableExtensionUpdate = availableExtensionUpdate;', updateContext);
+const { availableExtensionUpdate } = updateContext;
+const updateTag = 'v0.2.15';
+const zipName = 'Form-filling-tool-v0.2.15.zip';
+const downloadUrl = 'https://github.com/Alex97FR/form-filling-tool/releases/download/v0.2.15/' + zipName;
+const releaseAsset = { name: zipName, state: 'uploaded', browser_download_url: downloadUrl };
+const release = { draft: false, prerelease: false, tag_name: updateTag, assets: [releaseAsset] };
+assert.equal(availableExtensionUpdate(release, '0.2.9')?.url, downloadUrl);
+assert.equal(availableExtensionUpdate(release, '0.2.15'), null);
+assert.equal(availableExtensionUpdate(release, '0.3.0'), null);
+assert.equal(availableExtensionUpdate({ ...release, prerelease: true }, '0.2.14'), null);
+assert.equal(availableExtensionUpdate({ ...release, assets: [] }, '0.2.14'), null);
+assert.equal(availableExtensionUpdate({ ...release, assets: [{ ...releaseAsset, browser_download_url: 'https://example.test/' + zipName }] }, '0.2.14'), null);
 const context = { URL, URLSearchParams, performance, log() {}, formatDuration: String, crypto: require('node:crypto').webcrypto };
 vm.runInNewContext(spreadsheetIdSource + '\n' + slice('function parseGoogleAuthRedirect', 'async function getGoogleToken')
   + '\n' + slice('async function sheetsRequest', 'const readValues =')
@@ -46,7 +61,7 @@ vm.runInNewContext(spreadsheetIdSource + '\n' + slice('function parseGoogleAuthR
   + '\n' + source.match(/^const deviceConfigKeys = .*$/m)[0]
   + '\n' + slice('const normalizeTransferGroup =', 'async function copyText')
   + '\n' + slice('const syncConfigKeys =', "$('#exportConfig').onclick")
-  + '\nglobalThis.security = { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, selectReportProvider, callLlmWithRetry, buildConfigExport, parseConfigImport };', context);
+  + '\nglobalThis.security = { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, loadReportSettings, selectReportProvider, callLlmWithRetry, buildConfigExport, parseConfigImport };', context);
 const { parseGoogleAuthRedirect, getWebGoogleToken, sheetsRequest, parseModelJson, callGemini, selectReportProvider, callLlmWithRetry, buildConfigExport, parseConfigImport } = context.security;
 
 const redirect = 'https://extension-id.chromiumapp.org/';
@@ -89,7 +104,7 @@ assert.equal(imported.aDateValue, sync.aDateValue);
 const timeOptionsContext = {};
 vm.runInNewContext(source.match(/^const parseADateOptions = .*$/m)[0] + '\nglobalThis.parseOptions = parseADateOptions;', timeOptionsContext);
 assert.deepEqual(Array.from(timeOptionsContext.parseOptions(' 10 a.m.\r\n\n11:15 a.m.\n10 a.m. ')), ['10 a.m.', '11:15 a.m.']);
-assert.equal(imported.geminiApiKey, 'fake-gemini-key');
+for (const key of ['geminiApiKey', 'openRouterApiKey', 'openAiApiKey']) assert.equal(Object.hasOwn(imported, key), false);
 assert.equal(Object.hasOwn(imported, 'groqApiKey'), false);
 assert.equal(Object.hasOwn(imported, 'llmProvider'), false);
 assert.equal(Object.hasOwn(parseConfigImport(exported), 'geminiApiKey'), false);
@@ -165,8 +180,28 @@ async function checkRequests() {
   await assert.rejects(() => sheetsRequest('token', 'https://sheets.googleapis.com/local'), error => error.status === 401 && !error.message.includes(canary));
   await assert.rejects(() => callGemini('key', 'gemini-local', 'system', 'report'), error => !error.message.includes(canary));
   assert.equal(bodyReads, 1); // Only Sheets reads the body to identify the known API-disabled condition.
+  context.fetch = async () => assert.fail('Untrusted origin reached fetch');
+  for (const url of ['https://sheets.googleapis.com.example.test/', 'https://user:password@sheets.googleapis.com/']) {
+    await assert.rejects(() => sheetsRequest('token', url), /Google Sheets API/);
+  }
+  context.fetch = async (_url, options) => {
+    assert.equal(options.redirect, 'error');
+    return { ok: true, status: 200, json: async () => { throw new SyntaxError(canary); } };
+  };
+  await assert.rejects(() => sheetsRequest('token', 'https://sheets.googleapis.com/local'), error => !error.message.includes(canary));
+  await assert.rejects(() => callGemini('key', 'gemini-local', 'system', 'report'), error => !error.message.includes(canary));
+  context.extensionApi.identity.launchWebAuthFlow = async () => { throw new Error(canary); };
+  await assert.rejects(() => getWebGoogleToken(), error => !error.message.includes(canary));
 
   assert.equal(selectReportProvider({ geminiApiKey: local.geminiApiKey }).name, 'Gemini');
+  const { loadReportSettings } = context.security;
+  context.extensionStorage.local = { get: async defaults => ({ ...defaults, geminiApiKey: 'legacy-key' }) };
+  assert.equal((await loadReportSettings()).geminiApiKey, 'legacy-key');
+  context.extensionStorage.local.get = async defaults => ({ ...defaults, geminiApiKey: 'legacy-key', sessionReportKeys: true });
+  context.extensionStorage.session.get = async defaults => ({ ...defaults, geminiApiKey: 'session-key' });
+  assert.equal((await loadReportSettings()).geminiApiKey, 'session-key');
+  context.extensionStorage.session.get = async defaults => defaults;
+  assert.equal((await loadReportSettings()).geminiApiKey, '');
   const gemini = selectReportProvider({ geminiApiKey: '  first-key \r\n\nsecond-key\nfirst-key ' });
   const usedKeys = [];
   context.fetch = async (_url, options) => {
@@ -275,6 +310,8 @@ const clipboardReader = content.slice(content.indexOf('const readSelection ='), 
 assert.match(clipboardReader, /createElement\('template'\)/);
 assert.match(clipboardReader, /template\.content\.querySelectorAll\('tr'\)/);
 assert.doesNotMatch(clipboardReader, /DOMParser|append\(template|append\(copy/);
+assert.match(content, /setTimeout\(resolve, 1800\)\);\s+if \(!pendingTargetMatches\(location\.href, pending\.targetUrl\)\) return;\s+await navigator\.clipboard\.writeText/);
+assert.match(content, /copy\.onclick = async event => \{\s+if \(!event\.isTrusted \|\| !pendingTargetMatches\(location\.href, pending\.targetUrl\)\) return;/);
 const clipboardCellText = content.slice(content.indexOf('const cellText ='), content.indexOf('const rows ='));
 assert.match(clipboardCellText, /cloneNode\(true\)/);
 assert.doesNotMatch(clipboardCellText, /innerHTML/);
